@@ -46,13 +46,13 @@
 - 运行依赖统一通过项目内 `.venv` 管理，用户入口优先使用 `启动 Chameleon Lens.bat`。
 - 配置持久化使用项目根目录 `config.json`。当前配置字段数量少、结构固定，JSON 比 SQLite 更轻，便于手动排查和迁移；保存采用临时文件替换，避免写入中断导致配置损坏。
 - UI 信息架构按 `ESP / 雷达 / 外观 / 调试` 四个顶部页签组织：ESP 页只放目标点、标签和射线控制，雷达页只放雷达与参数，外观页只放透明度、点半径和颜色。
-- ESP 页使用两列开关布局和 ESP 效果预览；雷达预览只出现在雷达页，避免一个页签同时承载两个主题。
+- ESP 页使用“基础显示 / 标签与射线”两组开关和 ESP 效果预览；雷达预览只出现在雷达页，避免一个页签同时承载两个主题。
 - 运行状态放在标题栏右上角；标题栏只保留品牌、连接状态和窗口控制，不再显示透明度胶囊或副标题。
 - 连接状态使用自绘状态胶囊，标题栏只显示单行主状态：“未连接 · 等待进程”或“已连接 · 游戏进程”；详细错误和重试信息放在调试页。
 - 滑条使用可点击轨道控件并通过 `QPainter` 自绘，避免 QSS 滑条在圆角和 handle 上出现毛刺；开关需要让整个控件区域都可点击。
 - 开关使用 `QPropertyAnimation` 做短距离滑动动画，动画时间保持在 150ms 左右，避免影响工具响应感。
 - 主要容器、标题栏和内容面板使用 `SmoothFrame` 自绘，避免 QSS 的半透明圆角边框毛刺。
-- 顶部页签使用 `TabButton` 自绘，不再使用底部横条。Qt StyleSheet 的 `border + border-radius + 半透明背景` 在 Windows 上容易出现圆角毛刺，Logo、关闭按钮、关键按钮、调色板候选色、颜色预览和主要操作按钮优先用 `QPainter` 抗锯齿绘制。
+- 顶部页签使用 `TabButton` 自绘，不再使用底部横条。Qt StyleSheet 的 `border + border-radius + 半透明背景` 在 Windows 上容易出现圆角毛刺，Logo、关闭按钮、关键按钮、调色板候选色、颜色预览和主要操作按钮优先用 `QPainter` 抗锯齿绘制。ESP 与雷达预览共享开放 HUD 画布，用低透明网格、扫描线和角标填补空白，但不再增加内层卡片边框。
 - 自绘按钮、页签、关闭按钮和调色板候选色使用轻量 hover 过渡；滑条在 hover/拖动时改变轨道与滑块状态，提升可操作感但不做夸张动效。
 - `enabled` 是覆盖层总开关；`esp_enabled` 只控制屏幕 ESP 绘制，关闭后目标点、标签、射线和边缘提示都不画，但雷达仍由 `radar_enabled` 独立控制。
 - 覆盖层分离三个刷新节奏：绘制约 60 FPS，目标快照采样约 30 FPS，窗口位置和尺寸约每 250ms 更新一次。不要直接把绘制 timer 拉高来解决感知问题，先看调试日志里的 `performance.sample_ms` 和 `performance.paint_ms`。
@@ -61,7 +61,7 @@
 - 名称标签优先读取 `APlayerState::CustomPlayerName`，按 FText/FString 都尝试；失败后再读 `APlayerState::PlayerNamePrivate` 的 FString，最后才回退为“玩家 短 ID”、`PlayerId` 或“目标 N”。短 ID 不再用 `#xxxxxx`，避免和颜色 Hex 格式混淆。`CustomPlayerName`、`PlayerNamePrivate`、`PlayerId` 都采用动态属性解析优先，失败时使用历史日志确认过的 `0x388`、`0x340`、`0x2AC` 兜底。PlayerState 显示名会短时缓存，只有开启数据记录时才写入完整 `name_candidates`。
 - 名称候选只允许中文、英文、数字和少量昵称符号；`BP_`、`MI_`、`Default__`、`Character`、`Material` 等蓝图/资源/对象标识会被过滤，避免覆盖层显示乱码或内部对象名。
 - `snap_lines` 控制普通 ESP 射线；`show_local_snap_line` 只控制本地玩家是否绘制自身 ESP 射线。
-- `show_local_snap_line` 依赖 `show_local` 与 `snap_lines`，两者任一关闭时自身射线开关置灰但保留用户选择。
+- `show_local_snap_line` 依赖 `esp_enabled`、`show_local` 与 `snap_lines`，任一关闭时自身射线整行降权置灰但保留用户选择。
 - 覆盖层默认只使用 PlayerArray，不再使用 Level Actor fallback 参与实际绘制，避免场景残留、尸体和旧实例混进覆盖层。`reader.iter_players()` 返回 `TargetSnapshot`，旧五元组迭代仍保留兼容。
 - 目标枚举采用极简策略：PlayerArray 里除本地玩家和死亡/观战 pawn 外全部进入绘制流程，不再用 Character 白名单或反向绑定延迟过滤。`SpectatePawn` 不再直接等价死亡：先检查 `SpectatePawn + 0x1A0` 是否指向真实 Character，且该 Character 的 `LastMyPlayerState` 或 `APawn::PlayerState` 匹配当前 PlayerState、`Dead=0`、坐标有效；命中时使用真实 Character 绘制并计入 `pa_linked`，否则才计入 `pa_dead`。
 - 类名用于角色和形态分类：`Hunter` 记为猎人，`Survivor` 记为躲藏者，`Spectate` 记为观战；形态从类名中的 `Cube`、`Base` 等 token 推断。感染、基础、双重模式都会让同一 PlayerState 在躲藏者、猎人、观战之间合法切换，因此不能把“曾经是躲藏者”当永久身份。
@@ -81,7 +81,7 @@
 - 配置包含 `config_version`；升级默认配色时只迁移精确等于旧默认值的颜色，避免覆盖用户自定义颜色。
 - 右上角关闭按钮用于退出程序，并需要保留 hover 反馈。
 - 颜色选择使用项目内自定义深色面板，避免调用系统默认 `QColorDialog`。
-- 外观页按“绘制参数 / 颜色方案”分区，透明度和圆点半径并排使用滑条，颜色用自绘色块按钮，并提供“恢复默认外观”。
+- 外观页按“绘制参数 / 颜色方案”分区，透明度和圆点半径并排使用滑条，颜色用横向自绘色板列表，并提供“恢复默认外观”。
 - 新 UI 可以参考深色工具台风格，但当前更适合顶部 Tab 和精简仪器面板；功能边界保持 `ESP + 雷达`，不引入无关自动化模块。
 - PyQt5 菜单保持轻量单文件实现，避免在当前小项目中过早引入额外 UI 框架。
 - 含中文文件统一按 UTF-8 读写；PowerShell 读取时先切换 `chcp 65001` 并使用 `Get-Content -Encoding UTF8`。

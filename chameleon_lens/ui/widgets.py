@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QSlider, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import Qt, QPointF, QRectF, QPropertyAnimation, QEasingCurve, pyqtProperty
-from PyQt5.QtGui import QPainter, QPen, QColor, QFont, QLinearGradient
+from PyQt5.QtGui import QPainter, QPen, QColor, QFont
 
 from ..config import Config
 
@@ -136,6 +136,39 @@ class LogoBadge(QWidget):
 
 def _ease_mix(start, end, progress):
     return int(round(start + (end - start) * max(0.0, min(1.0, progress))))
+
+
+def _draw_hud_canvas(painter, scene, active=True):
+    painter.save()
+    grid_alpha = 18 if active else 9
+    accent_alpha = 34 if active else 14
+    painter.setBrush(Qt.NoBrush)
+    painter.setPen(QPen(QColor(148, 163, 184, grid_alpha), 1))
+
+    x = scene.left() + 24
+    while x < scene.right() - 8:
+        painter.drawLine(QPointF(x, scene.top() + 10), QPointF(x, scene.bottom() - 10))
+        x += 24
+
+    y = scene.top() + 24
+    while y < scene.bottom() - 8:
+        painter.drawLine(QPointF(scene.left() + 10, y), QPointF(scene.right() - 10, y))
+        y += 24
+
+    painter.setPen(QPen(QColor(94, 234, 212, accent_alpha), 1))
+    scan_y = scene.top() + 58
+    painter.drawLine(QPointF(scene.left() + 12, scan_y), QPointF(scene.right() - 12, scan_y))
+
+    corner_len = 20
+    painter.setPen(QPen(QColor(94, 234, 212, accent_alpha + 10), 1.2))
+    for x1, y1, x2, y2 in [
+        (scene.left() + corner_len, scene.top(), scene.left(), scene.top() + corner_len),
+        (scene.right() - corner_len, scene.top(), scene.right(), scene.top() + corner_len),
+        (scene.left(), scene.bottom() - corner_len, scene.left() + corner_len, scene.bottom()),
+        (scene.right(), scene.bottom() - corner_len, scene.right() - corner_len, scene.bottom()),
+    ]:
+        painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+    painter.restore()
 
 
 class AnimatedPaintButton(QPushButton):
@@ -417,6 +450,7 @@ class EspPreview(QWidget):
         painter.drawText(2, 20, "目标视图")
 
         scene = QRectF(2, 36, self.width() - 4, 204)
+        _draw_hud_canvas(painter, scene, self.config.esp_enabled)
         origin = QPointF(scene.center().x(), scene.bottom() - 8)
         hunter = QColor(*self.config.hunter_color)
         survivor = QColor(*self.config.survivor_color)
@@ -480,36 +514,53 @@ class RadarPreview(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         enabled = self.config.radar_enabled
-        cx, cy, radius = self.width() / 2, 122, 92
-        gradient = QLinearGradient(cx - radius, cy - radius, cx + radius, cy + radius)
-        gradient.setColorAt(0.0, QColor(94, 234, 212, 44 if enabled else 14))
-        gradient.setColorAt(1.0, QColor(56, 189, 248, 22 if enabled else 8))
-        painter.setPen(QPen(QColor(94, 234, 212, 105 if enabled else 34), 1))
-        painter.setBrush(gradient)
-        painter.drawEllipse(QPointF(cx, cy), radius, radius)
+        scene = QRectF(2, 36, self.width() - 4, 204)
+        center = QPointF(scene.center().x(), scene.center().y() + 5)
+        radius = 82
+
+        painter.setPen(QPen(QColor("#f4f7fb")))
+        painter.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
+        painter.drawText(2, 20, "雷达视图")
+
+        _draw_hud_canvas(painter, scene, enabled)
+        hud_alpha = 58 if enabled else 22
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(QColor(226, 232, 240, 28 if enabled else 14), 1))
-        for scale in (0.34, 0.66):
-            painter.drawEllipse(QPointF(cx, cy), radius * scale, radius * scale)
-        painter.drawLine(int(cx - radius), int(cy), int(cx + radius), int(cy))
-        painter.drawLine(int(cx), int(cy - radius), int(cx), int(cy + radius))
-        painter.setPen(QPen(QColor(94, 234, 212, 115 if enabled else 38), 2))
-        painter.drawLine(int(cx), int(cy), int(cx + 50), int(cy - 30))
+        painter.setPen(QPen(QColor(148, 163, 184, 18), 1))
+        painter.drawLine(QPointF(scene.left() + 18, center.y()), QPointF(scene.right() - 18, center.y()))
+        painter.drawLine(QPointF(center.x(), scene.top() + 16), QPointF(center.x(), scene.bottom() - 16))
+
+        painter.setPen(QPen(QColor(94, 234, 212, hud_alpha), 1))
+        for scale in (0.38, 0.68, 1.0):
+            range_r = radius * scale
+            painter.drawEllipse(center, range_r, range_r)
+
+        painter.setPen(QPen(QColor(94, 234, 212, 126 if enabled else 40), 1.6))
+        painter.drawLine(center, QPointF(center.x() + 48, center.y() - 32))
+
         painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(94, 234, 212, 42 if enabled else 16))
+        painter.drawEllipse(center, 10, 10)
         painter.setBrush(QColor("#5eead4") if enabled else QColor("#4b5563"))
-        painter.drawEllipse(QPointF(cx, cy), 6, 6)
+        painter.drawEllipse(center, 5, 5)
+
         hunter = QColor(*self.config.hunter_color)
         survivor = QColor(*self.config.survivor_color)
-        point_alpha = 190 if enabled else 52
-        for dx, dy, size, color in [(-46, -19, 4, hunter), (42, 25, 4, survivor),
-                                    (18, -52, 3, survivor), (-22, 50, 3, hunter)]:
+        point_alpha = 196 if enabled else 52
+        targets = [(-46, -19, 4, hunter), (42, 25, 4, survivor),
+                   (18, -52, 3, survivor), (-22, 50, 3, hunter)]
+        for dx, dy, size, color in targets:
+            point = QPointF(center.x() + dx, center.y() + dy)
+            painter.setBrush(QColor(color.red(), color.green(), color.blue(), 40 if enabled else 12))
+            painter.drawEllipse(point, size + 5, size + 5)
             painter.setBrush(QColor(color.red(), color.green(), color.blue(), point_alpha))
-            painter.drawEllipse(QPointF(cx + dx, cy + dy), size, size)
+            painter.drawEllipse(point, size, size)
 
-        painter.setPen(QPen(QColor("#687486")))
-        painter.setFont(QFont("Microsoft YaHei UI", 11))
+        painter.setPen(QPen(QColor(148, 163, 184, 28), 1))
+        painter.drawLine(QPointF(scene.left() + 18, scene.bottom()), QPointF(scene.right() - 18, scene.bottom()))
+        painter.setPen(QPen(QColor("#a5b1c2")))
+        painter.setFont(QFont("Microsoft YaHei UI", 10))
         state = "开" if enabled else "关"
-        painter.drawText(18, 270, f"雷达{state} · 范围 {self.config.radar_range}m · {self.config.radar_position}")
+        painter.drawText(2, 266, f"雷达{state} · 范围 {self.config.radar_range}m · {self.config.radar_position}")
 
 
 class AppearancePreview(QWidget):
@@ -563,7 +614,7 @@ class ColorSwatchButton(AnimatedPaintButton):
         self.title = title
         self.color = color
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedSize(176, 42)
+        self.setFixedSize(122, 62)
 
     def set_color(self, color):
         self.color = color
@@ -573,24 +624,26 @@ class ColorSwatchButton(AnimatedPaintButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         hover = self.hoverProgress
-        border = QColor(94, 234, 212, _ease_mix(38, 104, hover))
+        border = QColor(94, 234, 212, _ease_mix(32, 92, hover))
         painter.setPen(QPen(border, 1.2))
-        painter.setBrush(QColor(255, 255, 255, _ease_mix(10, 16, hover)))
+        painter.setBrush(QColor(255, 255, 255, _ease_mix(8, 14, hover)))
         painter.drawRoundedRect(QRectF(0.8, 0.8, self.width() - 1.6, self.height() - 1.6), 9, 9)
 
         swatch = QColor(*self.color)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(swatch.red(), swatch.green(), swatch.blue(), 46))
-        painter.drawEllipse(QPointF(22, 21), 12, 12)
-        painter.setBrush(swatch)
-        painter.drawEllipse(QPointF(22, 21), 7, 7)
+        # 色板用横向色条表达主色，比圆点按钮更接近专业调色面板。
+        swatch_rect = QRectF(8, 8, self.width() - 16, 22)
+        painter.setPen(QPen(QColor(255, 255, 255, 34), 1))
+        painter.setBrush(QColor(swatch.red(), swatch.green(), swatch.blue(), 232))
+        painter.drawRoundedRect(swatch_rect, 6, 6)
+        painter.setPen(QPen(QColor(swatch.red(), swatch.green(), swatch.blue(), 92), 1))
+        painter.drawLine(QPointF(13, 35), QPointF(self.width() - 13, 35))
 
         painter.setPen(QPen(QColor("#f4f7fb")))
-        painter.setFont(QFont("Microsoft YaHei UI", 10, QFont.DemiBold))
-        painter.drawText(44, 18, self.title)
+        painter.setFont(QFont("Microsoft YaHei UI", 9, QFont.DemiBold))
+        painter.drawText(QRectF(8, 37, self.width() - 16, 13), Qt.AlignCenter, self.title)
         painter.setPen(QPen(QColor("#a5b1c2")))
-        painter.setFont(QFont("Microsoft YaHei UI", 9))
-        painter.drawText(44, 33, "#{:02X}{:02X}{:02X}".format(*self.color))
+        painter.setFont(QFont("Microsoft YaHei UI", 8))
+        painter.drawText(QRectF(8, 50, self.width() - 16, 10), Qt.AlignCenter, "#{:02X}{:02X}{:02X}".format(*self.color))
 
 
 class ColorPreviewBox(QWidget):
