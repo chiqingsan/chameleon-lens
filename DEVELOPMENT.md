@@ -77,7 +77,7 @@
 - 名称定位优先看 `player_array_debug[].name_candidates`、`display_name_source` 和 `display_name_reader`。如果局内仍读不到昵称，运行 `debug_life_state.py names` 扫描 PlayerState 附近的 FString/FText 候选，确认中文/英文/数字昵称是否在其他偏移。
 - 位置大跳变超过阈值时会记录到 `position_jumps` 并清理旧 pawn/目标位置缓存，用于识别回合重置、地图切换或目标实例重建。
 - `player_array_debug[].reason` 记录 `no_pawn`、`local_pawn`、`duplicate_pawn`、`dead_or_spectator` 等跳过原因；`emitted_targets[].position_source` 记录当前使用的坐标来源。后续定位“突然不绘制”时，先确认 `pa_dead` 是否异常增加，以及未绘制帧里的 `position_source`、`projection_reasons` 和 `edge_reasons` 是否异常。
-- 菜单透明度使用窗口级 `setWindowOpacity()` 生效，避免只改变背景 alpha 导致 40%-60% 几乎无差异。
+- 菜单透明度使用窗口级 `setWindowOpacity()` 生效，外观页只开放 70%-96% 的可读区间，避免过低看不清、100% 过实。
 - 配置包含 `config_version`；升级默认配色时只迁移精确等于旧默认值的颜色，避免覆盖用户自定义颜色。
 - 右上角关闭按钮用于退出程序，并需要保留 hover 反馈。
 - 颜色选择使用项目内自定义深色面板，避免调用系统默认 `QColorDialog`。

@@ -10,6 +10,8 @@ from typing import Tuple
 # ---------------------------------------------------------------------------
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 CONFIG_VERSION = 2
+UI_OPACITY_MIN = 70
+UI_OPACITY_MAX = 96
 LEGACY_DEFAULT_COLORS = {
     "enemy_color": (255, 0, 0),
     "hunter_color": (255, 84, 84),
@@ -37,7 +39,7 @@ class Config:
     dot_radius: int = 8
     show_debug: bool = False
     record_debug_data: bool = False
-    ui_opacity: int = 92
+    ui_opacity: int = 94
 
     # 雷达根据相机朝向绘制目标相对位置。
     radar_enabled: bool = True
@@ -93,6 +95,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
             continue
     if file_version < CONFIG_VERSION:
         _migrate_config(config, file_version)
+    config.ui_opacity = max(UI_OPACITY_MIN, min(UI_OPACITY_MAX, int(config.ui_opacity)))
     config.config_version = CONFIG_VERSION
     return config
 

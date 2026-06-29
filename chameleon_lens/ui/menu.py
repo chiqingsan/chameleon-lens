@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor
 
-from ..config import Config, save_config
+from ..config import Config, UI_OPACITY_MAX, UI_OPACITY_MIN, save_config
 from ..logging import LOG_DIR
 from ..runtime import ESPRuntime
 from .widgets import (
@@ -66,7 +66,7 @@ class Menu(QWidget):
         self.refresh_status()
 
     def _apply_panel_style(self):
-        self.setWindowOpacity(max(0.4, min(1.0, self.config.ui_opacity / 100.0)))
+        self.setWindowOpacity(max(UI_OPACITY_MIN / 100.0, min(UI_OPACITY_MAX / 100.0, self.config.ui_opacity / 100.0)))
         self.container.setStyleSheet("""
             QFrame#settingRow {
                 border-bottom: 1px solid rgba(148, 163, 184, 18);
@@ -200,7 +200,7 @@ class Menu(QWidget):
         param_grid.setContentsMargins(0, 8, 0, 0)
         param_grid.setHorizontalSpacing(18)
         param_grid.setVerticalSpacing(0)
-        param_grid.addWidget(self._slider_row("菜单透明度", "ui_opacity", 40, 100, "%", compact=True), 0, 0)
+        param_grid.addWidget(self._slider_row("菜单透明度", "ui_opacity", UI_OPACITY_MIN, UI_OPACITY_MAX, "%", compact=True), 0, 0)
         param_grid.addWidget(self._slider_row("圆点半径", "dot_radius", 2, 32, "px", compact=True), 0, 1)
         layout.addLayout(param_grid)
         layout.addSpacing(18)

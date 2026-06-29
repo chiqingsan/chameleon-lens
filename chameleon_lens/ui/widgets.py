@@ -613,7 +613,7 @@ class ColorSwatchButton(AnimatedPaintButton):
         self.title = title
         self.color = color
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedSize(122, 62)
+        self.setFixedSize(122, 70)
 
     def set_color(self, color):
         self.color = color
@@ -630,19 +630,19 @@ class ColorSwatchButton(AnimatedPaintButton):
 
         swatch = QColor(*self.color)
         # 色板用横向色条表达主色，比圆点按钮更接近专业调色面板。
-        swatch_rect = QRectF(8, 8, self.width() - 16, 22)
+        swatch_rect = QRectF(8, 8, self.width() - 16, 24)
         painter.setPen(QPen(QColor(255, 255, 255, 34), 1))
         painter.setBrush(QColor(swatch.red(), swatch.green(), swatch.blue(), 232))
         painter.drawRoundedRect(swatch_rect, 6, 6)
         painter.setPen(QPen(QColor(swatch.red(), swatch.green(), swatch.blue(), 92), 1))
-        painter.drawLine(QPointF(13, 35), QPointF(self.width() - 13, 35))
+        painter.drawLine(QPointF(14, 38), QPointF(self.width() - 14, 38))
 
         painter.setPen(QPen(QColor("#f4f7fb")))
         painter.setFont(QFont("Microsoft YaHei UI", 9, QFont.DemiBold))
-        painter.drawText(QRectF(8, 37, self.width() - 16, 13), Qt.AlignCenter, self.title)
+        painter.drawText(QRectF(8, 42, self.width() - 16, 14), Qt.AlignCenter, self.title)
         painter.setPen(QPen(QColor("#a5b1c2")))
-        painter.setFont(QFont("Microsoft YaHei UI", 8))
-        painter.drawText(QRectF(8, 50, self.width() - 16, 10), Qt.AlignCenter, "#{:02X}{:02X}{:02X}".format(*self.color))
+        painter.setFont(QFont("Microsoft YaHei UI", 8, QFont.Medium))
+        painter.drawText(QRectF(8, 57, self.width() - 16, 11), Qt.AlignCenter, "#{:02X}{:02X}{:02X}".format(*self.color))
 
 
 class ColorPreviewBox(QWidget):
