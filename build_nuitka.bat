@@ -8,6 +8,7 @@ set "APP_NAME=ChameleonLens"
 set "ENTRY=main.py"
 set "ENTRY_STEM=main"
 set "ICON=assets\chameleon.ico"
+set "LOGO=assets\chameleon_logo.png"
 set "DIST_DIR=dist"
 
 if not exist "%VENV_PY%" (
@@ -32,10 +33,16 @@ if not exist "%ICON%" (
     if errorlevel 1 exit /b %ERRORLEVEL%
 )
 
+if not exist "%LOGO%" (
+    echo [Chameleon Lens] Generating menu logo...
+    "%VENV_PY%" tools\generate_app_icon.py
+    if errorlevel 1 exit /b %ERRORLEVEL%
+)
+
 if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
 
 echo [Chameleon Lens] Building with Nuitka...
-"%VENV_PY%" -m nuitka --standalone --onefile --assume-yes-for-downloads --enable-plugin=pyqt5 --windows-console-mode=disable --windows-icon-from-ico="%ICON%" --include-data-files="%ICON%=assets/chameleon.ico" --output-dir="%DIST_DIR%" --output-filename="%APP_NAME%.exe" "%ENTRY%"
+"%VENV_PY%" -m nuitka --standalone --onefile --assume-yes-for-downloads --enable-plugin=pyqt5 --windows-console-mode=disable --windows-icon-from-ico="%ICON%" --include-data-files="%ICON%=assets/chameleon.ico" --include-data-files="%LOGO%=assets/chameleon_logo.png" --output-dir="%DIST_DIR%" --output-filename="%APP_NAME%.exe" "%ENTRY%"
 
 if errorlevel 1 exit /b %ERRORLEVEL%
 

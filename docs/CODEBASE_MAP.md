@@ -10,7 +10,7 @@
 - `run.bat`：Windows 双击入口，依赖未变化时直接快速启动，必要时转发到 `bootstrap.py`。
 - `main.py`：Nuitka 打包入口，转入 `chameleon_lens.app.main()`。
 - `build_nuitka.bat`：Nuitka 打包脚本，使用 `main.py` 生成 `dist\ChameleonLens.exe` 并清理中间目录。
-- `assets/`：应用图标 SVG/ICO 和资产说明。
+- `assets/`：应用图标源图、ICO、菜单 Logo 和资产说明。
 - `requirements.txt`：运行依赖。
 - `tools/`：日志分析和图标生成等正式维护工具。
 - `docs/`：架构、代码地图、UI 概念和开发说明。
@@ -182,4 +182,4 @@ python -m chameleon_lens
 ## 维护工具
 
 - `tools/analyze_runtime_debug.py`：汇总运行日志，辅助判断漏绘制、过滤和投影问题。
-- `tools/generate_app_icon.py`：从 `assets/app.png` 处理并生成 Windows ICO 图标。
+- `tools/generate_app_icon.py`：从 `assets/app.png` 处理并生成 Windows ICO 图标和菜单 Logo。
