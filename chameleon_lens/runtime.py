@@ -9,6 +9,8 @@ from .reader import MecchaESP
 # ---------------------------------------------------------------------------
 class ESPRuntime:
     def __init__(self):
+        self.process_name = MecchaESP.PROCESS_NAME
+        self.module_name = MecchaESP.MODULE_NAME
         self.esp: Optional[MecchaESP] = None
         self.status = "等待游戏进程启动..."
         self.last_error = ""
@@ -26,7 +28,6 @@ class ESPRuntime:
             return True
         except Exception as exc:
             self.esp = None
-            self.status = f"等待游戏进程启动：{MecchaESP.PROCESS_NAME}"
+            self.status = f"等待游戏进程启动：{self.process_name}"
             self.last_error = str(exc)
             return False
-

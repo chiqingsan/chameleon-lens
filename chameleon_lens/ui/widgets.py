@@ -478,34 +478,37 @@ class RadarPreview(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        enabled = self.config.radar_enabled
         cx, cy, radius = self.width() / 2, 122, 92
         gradient = QLinearGradient(cx - radius, cy - radius, cx + radius, cy + radius)
-        gradient.setColorAt(0.0, QColor(94, 234, 212, 44))
-        gradient.setColorAt(1.0, QColor(56, 189, 248, 22))
-        painter.setPen(QPen(QColor(94, 234, 212, 105), 1))
+        gradient.setColorAt(0.0, QColor(94, 234, 212, 44 if enabled else 14))
+        gradient.setColorAt(1.0, QColor(56, 189, 248, 22 if enabled else 8))
+        painter.setPen(QPen(QColor(94, 234, 212, 105 if enabled else 34), 1))
         painter.setBrush(gradient)
         painter.drawEllipse(QPointF(cx, cy), radius, radius)
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(QColor(226, 232, 240, 28), 1))
+        painter.setPen(QPen(QColor(226, 232, 240, 28 if enabled else 14), 1))
         for scale in (0.34, 0.66):
             painter.drawEllipse(QPointF(cx, cy), radius * scale, radius * scale)
         painter.drawLine(int(cx - radius), int(cy), int(cx + radius), int(cy))
         painter.drawLine(int(cx), int(cy - radius), int(cx), int(cy + radius))
-        painter.setPen(QPen(QColor(94, 234, 212, 115), 2))
+        painter.setPen(QPen(QColor(94, 234, 212, 115 if enabled else 38), 2))
         painter.drawLine(int(cx), int(cy), int(cx + 50), int(cy - 30))
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#5eead4"))
+        painter.setBrush(QColor("#5eead4") if enabled else QColor("#4b5563"))
         painter.drawEllipse(QPointF(cx, cy), 6, 6)
         hunter = QColor(*self.config.hunter_color)
         survivor = QColor(*self.config.survivor_color)
+        point_alpha = 190 if enabled else 52
         for dx, dy, size, color in [(-46, -19, 4, hunter), (42, 25, 4, survivor),
                                     (18, -52, 3, survivor), (-22, 50, 3, hunter)]:
-            painter.setBrush(QColor(color.red(), color.green(), color.blue(), 190))
+            painter.setBrush(QColor(color.red(), color.green(), color.blue(), point_alpha))
             painter.drawEllipse(QPointF(cx + dx, cy + dy), size, size)
 
         painter.setPen(QPen(QColor("#687486")))
         painter.setFont(QFont("Microsoft YaHei UI", 11))
-        painter.drawText(18, 270, f"范围 {self.config.radar_range}m    位置 {self.config.radar_position}")
+        state = "开" if enabled else "关"
+        painter.drawText(18, 270, f"雷达{state} · 范围 {self.config.radar_range}m · {self.config.radar_position}")
 
 
 class AppearancePreview(QWidget):

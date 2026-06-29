@@ -13,6 +13,7 @@
 - `chameleon_lens.ui.widgets`：自绘 PyQt 控件、预览组件和颜色选择面板。
 - `chameleon_lens.ui.menu`：主控制菜单和页面组装。
 - `chameleon_lens.overlay`：透明覆盖层绘制、目标标签、射线和雷达。
+- `chameleon_lens.radar`：雷达坐标转换，把世界坐标投影到以相机朝向为正上方的雷达盘面。
 - `chameleon_lens.app`：Qt 应用组合根、单例互斥、定时器、热键轮询和启动流程。
 - `chameleon_lens.logging`：运行时 JSONL 诊断记录，当前用于覆盖层候选目标和投影排错。
 
@@ -21,11 +22,13 @@
 ```text
 app -> ui.menu -> ui.widgets
 app -> overlay -> reader -> memory
+overlay -> radar
 app -> runtime -> reader
-ui.menu -> config/runtime/reader
+ui.menu -> config/runtime
 overlay -> config/runtime/reader
 config -> 标准库
 memory -> pymem/标准库
+radar -> 标准库
 ```
 
 约束：
@@ -36,13 +39,14 @@ memory -> pymem/标准库
 - `ui.widgets` 只负责展示和控件交互，不直接连接游戏进程。
 - `ui.menu` 可以读写配置、刷新预览，但不做内存扫描。
 - `overlay` 只消费 `Config`、`ESPRuntime` 和 `reader` 输出，不直接构建菜单页面。
+- `radar` 只做坐标转换，不依赖 Qt、配置对象或内存读取。
 - 根目录 `esp.py` 只做兼容入口，不再新增业务逻辑。
 
 ## 当前风险点
 
 - `chameleon_lens.ui.widgets` 和 `chameleon_lens.ui.menu` 仍然偏大，这是第一阶段拆分后的自然过渡状态。
 - `reader.iter_players()` 是目标过滤核心，改动前应优先采集 `debug_life_state.py` 日志。
-- 雷达当前在 `overlay` 中完成相对坐标转换和绘制，后续可继续拆成独立雷达模型。
+- 覆盖层仍负责雷达绘制，但雷达坐标转换已经拆到 `chameleon_lens.radar`。
 - 启动器已改为 `python -m chameleon_lens`，但保留 `esp.py` 兼容旧脚本。
 
 ## 演进路线
@@ -50,7 +54,7 @@ memory -> pymem/标准库
 短期：
 
 - 新功能不再写进根目录 `esp.py`。
-- 真实雷达优先新增到 `reader` 的目标数据模型和 `overlay` 的雷达绘制，不直接塞进菜单。
+- 真实雷达优先新增到 `reader` 的目标数据模型、`radar` 的坐标转换和 `overlay` 的雷达绘制，不直接塞进菜单。
 - UI 小控件继续放在 `ui.widgets`，页面级布局放在 `ui.menu`。
 
 中期：

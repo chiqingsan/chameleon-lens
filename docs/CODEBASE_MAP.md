@@ -65,7 +65,7 @@ python -m chameleon_lens
 - 对 `SpectatePawn` 先尝试解析真实 Character 链接；命中计入 `pa_linked` 并绘制，未命中才计入 `pa_dead` 作为死亡或观战跳过。
 - 按 class 名称推断猎人、躲藏者和变身形态。
 - 为目标生成 `short_id`，并用位置大跳变识别回合/地图切换。
-- 读取 PlayerState 显示名。
+- 读取并短时缓存 PlayerState 显示名。
 - 提供 `w2s()` 世界到屏幕投影。
 
 ### `chameleon_lens/config.py`
@@ -98,6 +98,16 @@ python -m chameleon_lens
 - 创建 `logs/runtime_debug_*.jsonl`。
 - 限频写入覆盖层候选目标、过滤统计、相机、投影原因和最终绘制结果。
 
+### `chameleon_lens/radar.py`
+
+雷达坐标模型。
+
+负责：
+
+- 按相机 yaw 把目标相对位置转换到雷达盘面。
+- 计算点位、距离和是否钳到雷达边缘。
+- 保持纯计算，不依赖 Qt、配置对象或内存读取。
+
 ### `chameleon_lens/ui/widgets.py`
 
 自绘 UI 控件集合。
@@ -127,8 +137,10 @@ python -m chameleon_lens
 负责：
 
 - 跟随游戏窗口位置和尺寸。
+- 分离窗口几何刷新、目标快照采样和覆盖层绘制节奏。
 - 绘制目标点、标签、距离、射线和可选边缘提示。
 - 绘制真实雷达，按相机 yaw 展示目标相对位置。
+- 在调试日志中记录采样耗时、绘制耗时和刷新间隔。
 - 连接断开时通知运行时和菜单。
 
 ## 调试脚本

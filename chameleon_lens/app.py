@@ -56,7 +56,7 @@ def main():
     runtime = ESPRuntime()
     runtime.connect_once()
     menu = Menu(config, runtime)
-    overlay = Overlay(runtime, config, menu)
+    overlay = Overlay(runtime, config, menu.refresh_status)
     overlay.show()
     menu.show()
 

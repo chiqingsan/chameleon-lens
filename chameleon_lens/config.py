@@ -9,10 +9,17 @@ from typing import Tuple
 # Config
 # ---------------------------------------------------------------------------
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
+CONFIG_VERSION = 2
+LEGACY_DEFAULT_COLORS = {
+    "enemy_color": (255, 0, 0),
+    "hunter_color": (255, 84, 84),
+    "local_color": (0, 255, 0),
+}
 
 
 @dataclass
 class Config:
+    config_version: int = CONFIG_VERSION
     enabled: bool = True
     esp_enabled: bool = True
     show_hunter_esp: bool = True
@@ -23,12 +30,10 @@ class Config:
     snap_lines: bool = True
     show_local_snap_line: bool = False
     show_edge_indicators: bool = True
-    enemy_color: Tuple[int, int, int] = (255, 0, 0)
-    hunter_color: Tuple[int, int, int] = (255, 84, 84)
+    enemy_color: Tuple[int, int, int] = (248, 113, 113)
+    hunter_color: Tuple[int, int, int] = (251, 113, 133)
     survivor_color: Tuple[int, int, int] = (94, 234, 212)
-    local_color: Tuple[int, int, int] = (0, 255, 0)
-    box_height_world: float = 100.0
-    box_y_offset: int = 0
+    local_color: Tuple[int, int, int] = (52, 211, 153)
     dot_radius: int = 8
     show_debug: bool = False
     record_debug_data: bool = False
@@ -62,6 +67,11 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     if not isinstance(data, dict):
         return config
 
+    try:
+        file_version = int(data.get("config_version", 1))
+    except Exception:
+        file_version = 1
+
     known_fields = {field.name for field in fields(Config)}
     for key, value in data.items():
         if key not in known_fields:
@@ -81,7 +91,19 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         except Exception:
             # 配置文件允许用户手动编辑，单个字段坏了就回退默认值。
             continue
+    if file_version < CONFIG_VERSION:
+        _migrate_config(config, file_version)
+    config.config_version = CONFIG_VERSION
     return config
+
+
+def _migrate_config(config: Config, file_version: int):
+    if file_version < 2:
+        defaults = Config()
+        # 只迁移精确等于旧默认值的颜色，避免覆盖用户手动挑过的配色。
+        for attr, legacy_color in LEGACY_DEFAULT_COLORS.items():
+            if getattr(config, attr) == legacy_color:
+                setattr(config, attr, getattr(defaults, attr))
 
 
 def save_config(config: Config, path: Path = CONFIG_PATH) -> bool:

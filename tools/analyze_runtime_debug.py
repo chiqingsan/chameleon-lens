@@ -41,6 +41,17 @@ def print_counter(title, counter, total=None, limit=12):
         print(f"  {key}: {count}{ratio}")
 
 
+def print_metric(title, values):
+    print(f"\n{title}")
+    if not values:
+        print("  无")
+        return
+    values = sorted(values)
+    avg = sum(values) / len(values)
+    p95 = values[min(len(values) - 1, int(len(values) * 0.95))]
+    print(f"  avg={avg:.2f}ms p95={p95:.2f}ms max={values[-1]:.2f}ms")
+
+
 def summarize(path):
     rows = load_rows(path)
     print(f"日志：{path}")
@@ -68,6 +79,8 @@ def summarize(path):
     role_pending = Counter()
     forms = Counter()
     role_timeline = defaultdict(list)
+    sample_ms = []
+    paint_ms = []
     edge_frames = 0
     position_jump_frames = 0
     position_jump_count = 0
@@ -78,6 +91,11 @@ def summarize(path):
 
     for row in rows:
         stats = row.get("stats") or {}
+        performance = row.get("performance") or {}
+        if isinstance(performance.get("sample_ms"), (int, float)):
+            sample_ms.append(float(performance["sample_ms"]))
+        if isinstance(performance.get("paint_ms"), (int, float)):
+            paint_ms.append(float(performance["paint_ms"]))
         candidate_drawn[(row.get("player_candidates"), row.get("drawn"), len(row.get("radar_targets") or []))] += 1
         stats_counter[(
             stats.get("pa_total"),
@@ -169,6 +187,8 @@ def summarize(path):
     print(f"pa_suspect 出现帧：{pa_suspect_frames}")
     print(f"边缘提示出现帧：{edge_frames}")
     print(f"位置大跳变出现帧：{position_jump_frames}，事件数：{position_jump_count}")
+    print_metric("性能: 目标采样", sample_ms)
+    print_metric("性能: 覆盖层绘制", paint_ms)
     print_counter("候选/绘制/雷达 Top", candidate_drawn, len(rows))
     print_counter("统计 Top: pa_total, pa_valid, pa_dead, pa_linked, pa_orphan, pa_suspect, level_valid, level_orphan, rendered", stats_counter, len(rows))
     print_counter("投影失败原因", projection_reasons or target_reasons)
@@ -210,6 +230,8 @@ def summarize(path):
         print("  pa_dead 没出现：死亡/观战类过滤暂时不是首要嫌疑。")
     if pa_linked_frames:
         print("  pa_linked 有出现：SpectatePawn 指向了真实 Character，覆盖层已改用该 Character 绘制。")
+    if sample_ms or paint_ms:
+        print("  性能字段已记录：sample_ms 高说明内存采样压力大，paint_ms 高说明绘制压力大。")
     if projection_reasons or target_reasons:
         print("  有投影失败：若候选和雷达仍存在，优先检查坐标源、相机数据或增加屏幕边缘指示。")
     if edge_reasons:

@@ -8,7 +8,6 @@ from PyQt5.QtGui import QColor
 
 from ..config import Config, save_config
 from ..logging import LOG_DIR
-from ..reader import MecchaESP
 from ..runtime import ESPRuntime
 from .widgets import (
     AppearancePreview, ClickableSlider, CloseButton, ColorPickerDialog,
@@ -285,8 +284,8 @@ class Menu(QWidget):
 
     def _debug_target_panel(self):
         panel, layout = self._panel("目标信息", "当前连接目标", 280)
-        layout.addWidget(self._info_row("进程", MecchaESP.PROCESS_NAME))
-        layout.addWidget(self._info_row("模块", MecchaESP.MODULE_NAME))
+        layout.addWidget(self._info_row("进程", self.runtime.process_name))
+        layout.addWidget(self._info_row("模块", self.runtime.module_name))
         layout.addWidget(self._info_row("重试", "每 2 秒自动连接"))
         layout.addWidget(self._info_row("热键", "Insert / F1"))
         layout.addWidget(self._info_row("日志", str(LOG_DIR)))

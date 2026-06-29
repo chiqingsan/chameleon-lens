@@ -1,5 +1,5 @@
 """透明覆盖层绘制。"""
-import math
+import time
 
 from PyQt5.QtWidgets import QWidget
 from PyQt5.QtCore import Qt, QTimer, QPointF
@@ -8,20 +8,24 @@ from PyQt5.QtGui import QPainter, QPen, QColor, QFont
 from .config import Config
 from .logging import DebugDataRecorder
 from .memory import dist
-from .reader import project_debug, w2s
+from .radar import project_radar_point
+from .reader import project_debug
 from .runtime import ESPRuntime
-from .ui.menu import Menu
 
 
 # ---------------------------------------------------------------------------
 # 覆盖层
 # ---------------------------------------------------------------------------
 class Overlay(QWidget):
-    def __init__(self, runtime: ESPRuntime, config: Config, menu: Menu):
+    PAINT_INTERVAL_MS = 16
+    SNAPSHOT_INTERVAL_MS = 33
+    GEOMETRY_INTERVAL_MS = 250
+
+    def __init__(self, runtime: ESPRuntime, config: Config, on_status_changed=None):
         super().__init__()
         self.runtime = runtime
         self.config = config
-        self.menu = menu
+        self.on_status_changed = on_status_changed
         self.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
@@ -32,13 +36,27 @@ class Overlay(QWidget):
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.setWindowTitle("MECCHA 变色龙覆盖层")
         self.debug_recorder = DebugDataRecorder()
+        self._snapshot_esp = None
+        self._snapshot_camera = None
+        self._snapshot_players = []
+        self._last_sample_ms = 0.0
+        self._last_paint_ms = 0.0
 
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_overlay)
-        self.timer.start(16)
+        self.paint_timer = QTimer(self)
+        self.paint_timer.timeout.connect(self.update)
+        self.paint_timer.start(self.PAINT_INTERVAL_MS)
+
+        self.sample_timer = QTimer(self)
+        self.sample_timer.timeout.connect(self.refresh_snapshot)
+        self.sample_timer.start(self.SNAPSHOT_INTERVAL_MS)
+
+        self.geometry_timer = QTimer(self)
+        self.geometry_timer.timeout.connect(self.update_geometry)
+        self.geometry_timer.start(self.GEOMETRY_INTERVAL_MS)
 
         self.game_hwnd = self._find_game_window()
-        self._resize_to_game()
+        self.update_geometry()
+        self.refresh_snapshot()
 
     def _find_game_window(self):
         try:
@@ -60,12 +78,52 @@ class Overlay(QWidget):
         except Exception:
             self.setGeometry(0, 0, 1920, 1080)
 
-    def update_overlay(self):
+    def update_geometry(self):
         self.game_hwnd = self._find_game_window()
         self._resize_to_game()
+
+    def refresh_snapshot(self):
+        """按固定采样频率读取目标快照，绘制阶段只消费缓存，避免 UI 线程每帧重复读内存。"""
+        if not self.config.enabled:
+            self._snapshot_esp = None
+            self._snapshot_camera = None
+            self._snapshot_players = []
+            return
+
+        esp = self.runtime.esp
+        if not esp:
+            self._snapshot_esp = None
+            self._snapshot_camera = None
+            self._snapshot_players = []
+            return
+
+        started = time.perf_counter()
+        try:
+            cam = esp.get_camera()
+            if not cam:
+                self._snapshot_camera = None
+                self._snapshot_players = []
+                return
+            players = list(esp.iter_players(
+                include_local=self.config.show_local,
+                players_only=True,
+                collect_debug=self.config.record_debug_data,
+            ))
+        except Exception as exc:
+            self._snapshot_esp = None
+            self._snapshot_camera = None
+            self._snapshot_players = []
+            self._mark_disconnected(exc)
+            return
+
+        self._snapshot_esp = esp
+        self._snapshot_camera = cam
+        self._snapshot_players = players
+        self._last_sample_ms = (time.perf_counter() - started) * 1000.0
         self.update()
 
     def paintEvent(self, event):
+        started = time.perf_counter()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         font = QFont("Microsoft YaHei UI", 10)
@@ -74,63 +132,80 @@ class Overlay(QWidget):
         w = self.width()
         h = self.height()
 
-        if not self.config.enabled:
-            return
-
-        esp = self.runtime.esp
-        if not esp:
-            return
-
         try:
-            cam = esp.get_camera()
-        except Exception as exc:
-            self._mark_disconnected(exc)
-            return
-        if not cam:
-            return
+            if not self.config.enabled:
+                return
 
-        count = 0
-        debug_targets = []
-        try:
-            players = list(esp.iter_players(include_local=self.config.show_local, players_only=True))
-        except Exception as exc:
-            self._mark_disconnected(exc)
-            return
+            esp = self._snapshot_esp
+            cam = self._snapshot_camera
+            if not esp or not cam:
+                return
 
-        if self.config.esp_enabled:
-            for player in players:
-                target = self._target_info(player)
-                if self._target_hidden_by_role(target):
-                    continue
-                is_local = target["is_local"]
-                pos = target["pos"]
-                idx = target["idx"]
-                label = self._target_label(target)
-                color = self._target_color(target)
-                projection = project_debug(pos, cam, w, h)
-                screen_info = tuple(projection["screen"]) if projection["visible"] else None
-                if not screen_info:
-                    edge_info = self._edge_point_for_projection(projection, w, h) if self.config.show_edge_indicators else None
-                    if edge_info:
-                        sx, sy = edge_info
-                        self._draw_offscreen_target(painter, sx, sy, color)
+            count = 0
+            debug_targets = []
+            players = self._snapshot_players
 
-                        should_draw_ray = self.config.snap_lines and (not is_local or self.config.show_local_snap_line)
-                        if should_draw_ray:
-                            painter.setPen(QPen(QColor(*color), 1))
-                            painter.drawLine(int(w / 2), int(h), int(sx), int(sy))
+            if self.config.esp_enabled:
+                for player in players:
+                    target = self._target_info(player)
+                    if self._target_hidden_by_role(target):
+                        continue
+                    is_local = target["is_local"]
+                    pos = target["pos"]
+                    idx = target["idx"]
+                    label = self._target_label(target)
+                    color = self._target_color(target)
+                    projection = project_debug(pos, cam, w, h)
+                    screen_info = tuple(projection["screen"]) if projection["visible"] else None
+                    if not screen_info:
+                        edge_info = self._edge_point_for_projection(projection, w, h) if self.config.show_edge_indicators else None
+                        if edge_info:
+                            sx, sy = edge_info
+                            self._draw_offscreen_target(painter, sx, sy, color)
 
-                        label_parts = []
-                        if self.config.show_names:
-                            label_parts.append(label)
-                        if self.config.show_distance:
-                            d = int(dist(pos, cam["loc"]) / 100)
-                            label_parts.append(f"{d}m")
-                        if label_parts:
-                            painter.setPen(QPen(QColor(*color)))
-                            text = " | ".join(label_parts)
-                            tx, ty = self._fit_label_point(sx + self.config.dot_radius + 6, sy, w, h)
-                            painter.drawText(int(tx), int(ty), text)
+                            should_draw_ray = self.config.snap_lines and (not is_local or self.config.show_local_snap_line)
+                            if should_draw_ray:
+                                painter.setPen(QPen(QColor(*color), 1))
+                                painter.drawLine(int(w / 2), int(h), int(sx), int(sy))
+
+                            label_parts = []
+                            if self.config.show_names:
+                                label_parts.append(label)
+                            if self.config.show_distance:
+                                d = int(dist(pos, cam["loc"]) / 100)
+                                label_parts.append(f"{d}m")
+                            if label_parts:
+                                painter.setPen(QPen(QColor(*color)))
+                                text = " | ".join(label_parts)
+                                tx, ty = self._fit_label_point(sx + self.config.dot_radius + 6, sy, w, h)
+                                painter.drawText(int(tx), int(ty), text)
+
+                            debug_targets.append({
+                                "idx": idx,
+                                "player_id": target["player_id"],
+                                "short_id": target["short_id"],
+                                "name": label,
+                                "local": is_local,
+                                "role": target["role"],
+                                "stable_role": target["stable_role"],
+                                "filter_role": target["filter_role"],
+                                "form": target["form"],
+                                "class": target["class_name"],
+                                "player_state": target["player_state"],
+                                "pawn": target["pawn"],
+                                "position_jump": target["position_jump"],
+                                "world": self._round_pos(pos),
+                                "screen": [round(float(sx), 2), round(float(sy), 2)],
+                                "edge": True,
+                                "projection": projection,
+                                "distance_m": int(dist(pos, cam["loc"]) / 100),
+                                "dot": bool(self.config.box_esp),
+                                "ray": bool(should_draw_ray),
+                                "drawn": True,
+                                "reason": projection.get("reason") or "not_visible",
+                            })
+                            count += 1
+                            continue
 
                         debug_targets.append({
                             "idx": idx,
@@ -147,17 +222,31 @@ class Overlay(QWidget):
                             "pawn": target["pawn"],
                             "position_jump": target["position_jump"],
                             "world": self._round_pos(pos),
-                            "screen": [round(float(sx), 2), round(float(sy), 2)],
-                            "edge": True,
                             "projection": projection,
-                            "distance_m": int(dist(pos, cam["loc"]) / 100),
-                            "dot": bool(self.config.box_esp),
-                            "ray": bool(should_draw_ray),
-                            "drawn": True,
+                            "drawn": False,
                             "reason": projection.get("reason") or "not_visible",
                         })
-                        count += 1
                         continue
+                    sx, sy = screen_info
+
+                    if self.config.box_esp:
+                        self._draw_dot(painter, sx, sy, color)
+
+                    should_draw_ray = self.config.snap_lines and (not is_local or self.config.show_local_snap_line)
+                    if should_draw_ray:
+                        painter.setPen(QPen(QColor(*color), 1))
+                        painter.drawLine(int(w / 2), int(h), int(sx), int(sy))
+
+                    label_parts = []
+                    if self.config.show_names:
+                        label_parts.append(label)
+                    if self.config.show_distance:
+                        d = int(dist(pos, cam["loc"]) / 100)
+                        label_parts.append(f"{d}m")
+                    if label_parts:
+                        painter.setPen(QPen(QColor(*color)))
+                        text = " | ".join(label_parts)
+                        painter.drawText(int(sx + self.config.dot_radius + 4), int(sy), text)
 
                     debug_targets.append({
                         "idx": idx,
@@ -174,77 +263,32 @@ class Overlay(QWidget):
                         "pawn": target["pawn"],
                         "position_jump": target["position_jump"],
                         "world": self._round_pos(pos),
-                        "projection": projection,
-                        "drawn": False,
-                        "reason": projection.get("reason") or "not_visible",
+                        "screen": [round(float(sx), 2), round(float(sy), 2)],
+                        "distance_m": int(dist(pos, cam["loc"]) / 100),
+                        "dot": bool(self.config.box_esp),
+                        "ray": bool(should_draw_ray),
+                        "drawn": True,
                     })
-                    continue
-                sx, sy = screen_info
+                    count += 1
 
-                if self.config.box_esp:
-                    self._draw_dot(painter, sx, sy, color)
+            if self.config.show_debug:
+                painter.setPen(QPen(QColor(255, 255, 255)))
+                painter.drawText(14, 24, f"玩家：{count}")
+                stats = getattr(esp, "_last_iter_stats", {})
+                line = (f"PA:{stats.get('pa_total', 0)}/{stats.get('pa_valid', 0)} "
+                        f"PD:{stats.get('pa_dead', 0)} "
+                        f"PS:{stats.get('pa_suspect', 0)} "
+                        f"PO:{stats.get('pa_orphan', 0)} "
+                        f"LA:{stats.get('level_total', 0)}/{stats.get('level_valid', 0)} "
+                        f"OR:{stats.get('level_orphan', 0)}")
+                painter.drawText(14, 42, line)
+                perf = f"采样:{self._last_sample_ms:.1f}ms 绘制:{self._last_paint_ms:.1f}ms"
+                painter.drawText(14, 60, perf)
 
-                should_draw_ray = self.config.snap_lines and (not is_local or self.config.show_local_snap_line)
-                if should_draw_ray:
-                    painter.setPen(QPen(QColor(*color), 1))
-                    painter.drawLine(int(w / 2), int(h), int(sx), int(sy))
-
-                label_parts = []
-                if self.config.show_names:
-                    label_parts.append(label)
-                if self.config.show_distance:
-                    d = int(dist(pos, cam["loc"]) / 100)
-                    label_parts.append(f"{d}m")
-                if label_parts:
-                    painter.setPen(QPen(QColor(*color)))
-                    text = " | ".join(label_parts)
-                    painter.drawText(int(sx + self.config.dot_radius + 4), int(sy), text)
-
-                debug_targets.append({
-                    "idx": idx,
-                    "player_id": target["player_id"],
-                    "short_id": target["short_id"],
-                    "name": label,
-                    "local": is_local,
-                    "role": target["role"],
-                    "stable_role": target["stable_role"],
-                    "filter_role": target["filter_role"],
-                    "form": target["form"],
-                    "class": target["class_name"],
-                    "player_state": target["player_state"],
-                    "pawn": target["pawn"],
-                    "position_jump": target["position_jump"],
-                    "world": self._round_pos(pos),
-                    "screen": [round(float(sx), 2), round(float(sy), 2)],
-                    "distance_m": int(dist(pos, cam["loc"]) / 100),
-                    "dot": bool(self.config.box_esp),
-                    "ray": bool(should_draw_ray),
-                    "drawn": True,
-                })
-                count += 1
-
-        if self.config.show_debug:
-            painter.setPen(QPen(QColor(255, 255, 255)))
-            painter.drawText(14, 24, f"玩家：{count}")
-            stats = getattr(esp, "_last_iter_stats", {})
-            line = (f"PA:{stats.get('pa_total', 0)}/{stats.get('pa_valid', 0)} "
-                    f"PD:{stats.get('pa_dead', 0)} "
-                    f"PS:{stats.get('pa_suspect', 0)} "
-                    f"PO:{stats.get('pa_orphan', 0)} "
-                    f"LA:{stats.get('level_total', 0)}/{stats.get('level_valid', 0)} "
-                    f"OR:{stats.get('level_orphan', 0)}")
-            painter.drawText(14, 42, line)
-
-        radar_points = self._draw_radar(painter, w, h, cam, players)
-        self._record_debug_frame(esp, cam, players, debug_targets, radar_points, count, w, h)
-
-    def _project_dot(self, center_pos, camera, screen_w, screen_h):
-        # The actor's RootComponent relative location is already the capsule center,
-        # so project it directly instead of guessing from feet/head.
-        s = w2s(center_pos, camera, screen_w, screen_h)
-        if not s:
-            return None
-        return (s[0], s[1] + self.config.box_y_offset)
+            radar_points = self._draw_radar(painter, w, h, cam, players)
+            self._record_debug_frame(esp, cam, players, debug_targets, radar_points, count, w, h)
+        finally:
+            self._last_paint_ms = (time.perf_counter() - started) * 1000.0
 
     def _unpack_player(self, player):
         if len(player) >= 5:
@@ -422,6 +466,13 @@ class Overlay(QWidget):
                 "status": self.runtime.status,
                 "last_error": self.runtime.last_error,
             },
+            "performance": {
+                "sample_ms": round(float(self._last_sample_ms), 3),
+                "paint_ms": round(float(self._last_paint_ms), 3),
+                "sample_interval_ms": self.SNAPSHOT_INTERVAL_MS,
+                "paint_interval_ms": self.PAINT_INTERVAL_MS,
+                "geometry_interval_ms": self.GEOMETRY_INTERVAL_MS,
+            },
             "stats": stats,
             "player_candidates": len(players),
             "drawn": drawn_count,
@@ -494,11 +545,6 @@ class Overlay(QWidget):
         cam_rot = camera.get("rot")
         if not cam_loc or not cam_rot:
             return []
-        yaw = cam_rot[1]
-        yaw_rad = math.radians(yaw)
-        cos_y = math.cos(yaw_rad)
-        sin_y = math.sin(yaw_rad)
-        world_range = max(1, self.config.radar_range) * 100.0
         out = []
         for player in players:
             target = self._target_info(player)
@@ -507,18 +553,7 @@ class Overlay(QWidget):
             if self._target_hidden_by_role(target):
                 continue
             pos = target["pos"]
-            dx = pos[0] - cam_loc[0]
-            dy = pos[1] - cam_loc[1]
-            # 以相机朝向为雷达正上方：前方在 y 负方向，右侧在 x 正方向。
-            forward = dx * cos_y + dy * sin_y
-            right = -dx * sin_y + dy * cos_y
-            distance = (right * right + forward * forward) ** 0.5
-            scale = inner_radius / world_range
-            clamped = distance > world_range
-            if clamped and distance > 0:
-                ratio = world_range / distance
-                right *= ratio
-                forward *= ratio
+            radar = project_radar_point(pos, cam_loc, cam_rot[1], self.config.radar_range, inner_radius)
             out.append({
                 "idx": target["idx"],
                 "player_id": target["player_id"],
@@ -528,10 +563,10 @@ class Overlay(QWidget):
                 "stable_role": target["stable_role"],
                 "filter_role": target["filter_role"],
                 "form": target["form"],
-                "x": right * scale,
-                "y": -forward * scale,
-                "distance_m": int(distance / 100),
-                "clamped": clamped,
+                "x": radar["x"],
+                "y": radar["y"],
+                "distance_m": radar["distance_m"],
+                "clamped": radar["clamped"],
                 "color": self._target_color(target),
             })
         return out
@@ -544,4 +579,5 @@ class Overlay(QWidget):
         self.runtime.esp = None
         self.runtime.status = "连接已断开，等待游戏进程重新出现..."
         self.runtime.last_error = str(exc)
-        self.menu.refresh_status()
+        if self.on_status_changed:
+            self.on_status_changed()

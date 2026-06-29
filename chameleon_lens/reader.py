@@ -107,10 +107,6 @@ def _normalize_display_name(name):
     return name, ""
 
 
-def _looks_like_display_name(name):
-    return bool(_normalize_display_name(name)[0])
-
-
 # ---------------------------------------------------------------------------
 # Game reader
 # ---------------------------------------------------------------------------
@@ -148,6 +144,7 @@ class MecchaESP:
     POSITION_JUMP_UNITS = 30000.0
     ROLE_SWITCH_GRACE_SECONDS = 1.2
     PLAYER_TRACKER_TTL_SECONDS = 20.0
+    NAME_CACHE_SECONDS = 1.0
     SPECTATE_LINKED_CHARACTER_OFFSET = 0x1A0
     PLAYERSTATE_FALLBACK_OFFSETS = {
         "CustomPlayerName": 0x388,
@@ -216,6 +213,7 @@ class MecchaESP:
         self._target_position_cache = {}
         self._last_position_jumps = []
         self._player_state_tracker = {}
+        self._player_name_cache = {}
 
     def _scan_guobject_array(self):
         scanner = PatternScanner(self.pm, self.MODULE_NAME)
@@ -440,26 +438,46 @@ class MecchaESP:
             ),
         ]
 
-    def _player_display_name_info(self, player_state):
-        for candidate in self._player_name_candidates(player_state):
+    def _player_display_name_info(self, player_state, include_candidates=False):
+        now = time.monotonic()
+        cached = self._player_name_cache.get(player_state)
+        if cached and now - cached.get("seen_at", 0.0) < self.NAME_CACHE_SECONDS:
+            if include_candidates and "candidates" not in cached:
+                cached["candidates"] = self._debug_name_candidates(player_state)
+            return {
+                "name": cached.get("name", ""),
+                "source": cached.get("source", ""),
+                "reader": cached.get("reader", ""),
+                "candidates": cached.get("candidates", []) if include_candidates else [],
+            }
+
+        scanned_candidates = self._player_name_candidates(player_state)
+        for candidate in scanned_candidates:
             if candidate.get("accepted"):
-                return {
+                info = {
                     "name": candidate.get("name", ""),
                     "source": candidate.get("field", ""),
                     "reader": candidate.get("source", ""),
-                    "candidates": self._debug_name_candidates(player_state),
                 }
-        return {
+                if include_candidates:
+                    info["candidates"] = self._format_name_candidates(scanned_candidates)
+                self._player_name_cache[player_state] = {"seen_at": now, **info}
+                return {**info, "candidates": info.get("candidates", [])}
+
+        info = {
             "name": "",
             "source": "",
             "reader": "",
-            "candidates": self._debug_name_candidates(player_state),
         }
+        if include_candidates:
+            info["candidates"] = self._format_name_candidates(scanned_candidates)
+        self._player_name_cache[player_state] = {"seen_at": now, **info}
+        return {**info, "candidates": info.get("candidates", [])}
 
-    def _debug_name_candidates(self, player_state):
-        """记录候选名称的过滤结果；只用于日志，不直接显示到覆盖层。"""
+    @staticmethod
+    def _format_name_candidates(items):
         candidates = []
-        for item in self._player_name_candidates(player_state):
+        for item in items:
             raw = item.get("raw") or ""
             candidates.append({
                 "field": item.get("field", ""),
@@ -470,6 +488,10 @@ class MecchaESP:
                 "reason": item.get("reason", ""),
             })
         return candidates
+
+    def _debug_name_candidates(self, player_state):
+        """记录候选名称的过滤结果；只用于日志，不直接显示到覆盖层。"""
+        return self._format_name_candidates(self._player_name_candidates(player_state))
 
     def _player_display_name(self, player_state):
         if not player_state:
@@ -495,17 +517,17 @@ class MecchaESP:
         player_id = self._player_id(player_state)
         return f"ID {player_id}" if player_id else ""
 
-    def _player_debug_identity(self, player_state):
+    def _player_debug_identity(self, player_state, collect_debug=False):
         """整理 PlayerState 身份信息；本地玩家即使不绘制也要进调试日志。"""
         player_id = self._player_id(player_state)
-        name_info = self._player_display_name_info(player_state)
+        name_info = self._player_display_name_info(player_state, include_candidates=collect_debug)
         return {
             "player_id": player_id,
             "short_id": self._short_pointer_id(player_state),
             "display_name": name_info.get("name", ""),
             "display_name_source": name_info.get("source", ""),
             "display_name_reader": name_info.get("reader", ""),
-            "name_candidates": name_info.get("candidates", []),
+            "name_candidates": name_info.get("candidates", []) if collect_debug else [],
         }
 
     def _actor_owner(self, actor):
@@ -690,6 +712,14 @@ class MecchaESP:
         for key in stale:
             del self._player_state_tracker[key]
 
+    def _cleanup_player_name_cache(self, active_player_states, now):
+        stale = [
+            key for key, item in self._player_name_cache.items()
+            if key not in active_player_states and now - item.get("seen_at", now) > self.PLAYER_TRACKER_TTL_SECONDS
+        ]
+        for key in stale:
+            del self._player_name_cache[key]
+
     def _read_object_property_u8(self, obj, prop_name):
         off = self._resolve_object_property_offset(obj, prop_name, 0)
         if not off:
@@ -826,7 +856,7 @@ class MecchaESP:
         for pawn in stale:
             del self._pawn_life_tracker[pawn]
 
-    def iter_players(self, include_local=False, players_only=False):
+    def iter_players(self, include_local=False, players_only=False, collect_debug=True):
         now = time.monotonic()
         world = self._get_world()
         if not world:
@@ -879,7 +909,10 @@ class MecchaESP:
         def _emit_actor(actor, idx, stat_key, display_name="", source="unknown", player_state=0, role_state=None):
             pos_info = self._actor_position_info(actor)
             pos = pos_info["position"]
-            name_info = self._player_display_name_info(player_state)
+            name_info = (
+                self._player_display_name_info(player_state, include_candidates=True)
+                if collect_debug else {"source": "", "reader": "", "candidates": []}
+            )
             cls_name = self._class_name(actor)
             role, form = self._class_role_info(cls_name)
             if role_state is None:
@@ -898,7 +931,7 @@ class MecchaESP:
                 "display_name": display_name,
                 "display_name_source": name_info.get("source", ""),
                 "display_name_reader": name_info.get("reader", ""),
-                "name_candidates": name_info.get("candidates", []),
+                "name_candidates": name_info.get("candidates", []) if collect_debug else [],
                 "class": cls_name,
                 "role": role,
                 "stable_role": role_state.get("stable_role", role),
@@ -915,19 +948,22 @@ class MecchaESP:
             if pos is None:
                 item["result"] = "skip"
                 item["reason"] = "no_position"
-                emit_debug.append(item)
+                if collect_debug:
+                    emit_debug.append(item)
                 return
             # Drop uninitialized / origin-only positions.
             if self._is_origin_position(pos):
                 item["result"] = "skip"
                 item["reason"] = "origin_position"
-                emit_debug.append(item)
+                if collect_debug:
+                    emit_debug.append(item)
                 return
             stats[stat_key] += 1
             stats["rendered"] += 1
             item["result"] = "emit"
             item["stat_key"] = stat_key
-            emit_debug.append(item)
+            if collect_debug:
+                emit_debug.append(item)
             yield TargetSnapshot(
                 is_local=False,
                 pos=pos,
@@ -991,7 +1027,7 @@ class MecchaESP:
                         playerarray_debug.append(pa_item)
                         continue
                     active_player_states.add(ps)
-                    pa_item.update(self._player_debug_identity(ps))
+                    pa_item.update(self._player_debug_identity(ps, collect_debug=collect_debug))
                     if ps == local_ps:
                         pa_item["result"] = "skip"
                         pa_item["reason"] = "local_player_state"
@@ -1152,11 +1188,11 @@ class MecchaESP:
                         level_item["result"] = "candidate"
                         level_item["reason"] = ""
                         level_item["player_id"] = self._player_id(actor_ps)
-                        name_info = self._player_display_name_info(actor_ps)
+                        name_info = self._player_display_name_info(actor_ps, include_candidates=collect_debug)
                         level_item["display_name"] = name_info.get("name") or self._player_display_label(actor_ps)
                         level_item["display_name_source"] = name_info.get("source", "")
                         level_item["display_name_reader"] = name_info.get("reader", "")
-                        level_item["name_candidates"] = name_info.get("candidates", [])
+                        level_item["name_candidates"] = name_info.get("candidates", []) if collect_debug else []
                         level_item["short_id"] = self._short_pointer_id(actor_ps, actor)
                         role, form = self._class_role_info(cls_name)
                         role_state = self._update_player_state_tracker(actor_ps, role, form, cls_name, actor, pos_info["position"], now)
@@ -1173,6 +1209,7 @@ class MecchaESP:
         self._cleanup_pawn_life_tracker(seen_life_pawns, now)
         self._cleanup_target_position_cache(active_position_keys, now)
         self._cleanup_player_state_tracker(active_player_states, now)
+        self._cleanup_player_name_cache(active_player_states, now)
 
 
 # ---------------------------------------------------------------------------

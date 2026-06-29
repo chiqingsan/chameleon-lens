@@ -19,6 +19,7 @@
 - 自绘控件和预览放在 `chameleon_lens.ui.widgets`。
 - 菜单页面组装放在 `chameleon_lens.ui.menu`。
 - 透明覆盖层绘制放在 `chameleon_lens.overlay`。
+- 雷达坐标转换放在 `chameleon_lens.radar`，覆盖层只负责画出来。
 - Qt 应用启动和定时器放在 `chameleon_lens.app`。
 
 ## 修改前判断
@@ -54,8 +55,8 @@
 - 采集 `debug_life_state.py sample --label alive`。
 - 采集 `debug_life_state.py sample --label dead`。
 - 对比 PlayerArray、Level Actor、`player_state`、`controller`、`display_name` 和位置变化。
-- 如果是“漏绘制”，优先开启调试页“数据记录”，检查 `logs/runtime_debug_*.jsonl` 中的 `stats`、`projection_reasons`、`player_array_debug`、`level_actor_debug`、`emitted_targets` 和 `targets[].projection`。
-- 定位顺序：先看 `pa_dead` 是否异常增加；它表示 PlayerArray pawn 类名包含 `Spectate` 且没有找到可用真实 Character。再看 `pa_linked` 与 `player_array_debug[].spectate_link`，它表示 `SpectatePawn` 指向了仍可绘制的真实 Character。接着看 `player_array_debug[].reason` 是否大量出现 `no_pawn`、`dead_or_spectator`；然后看 `role/stable_role/filter_role` 是否发生身份切换或防抖；最后看 `emitted_targets[].position_source`、`targets[].reason` 和 `edge_reasons`。`behind_camera` / `outside_view*` 代表目标已读到但不在当前屏幕内；开启“边缘提示”时覆盖层会把这些目标钳到屏幕边缘绘制，若仍异常再检查坐标源或相机数据。
+- 如果是“漏绘制”或卡顿，优先开启调试页“数据记录”，检查 `logs/runtime_debug_*.jsonl` 中的 `performance`、`stats`、`projection_reasons`、`player_array_debug`、`level_actor_debug`、`emitted_targets` 和 `targets[].projection`。
+- 定位顺序：先看 `performance.sample_ms` 和 `performance.paint_ms`，确认压力来自采样还是绘制；再看 `pa_dead` 是否异常增加，它表示 PlayerArray pawn 类名包含 `Spectate` 且没有找到可用真实 Character。再看 `pa_linked` 与 `player_array_debug[].spectate_link`，它表示 `SpectatePawn` 指向了仍可绘制的真实 Character。接着看 `player_array_debug[].reason` 是否大量出现 `no_pawn`、`dead_or_spectator`；然后看 `role/stable_role/filter_role` 是否发生身份切换或防抖；最后看 `emitted_targets[].position_source`、`targets[].reason` 和 `edge_reasons`。`behind_camera` / `outside_view*` 代表目标已读到但不在当前屏幕内；开启“边缘提示”时覆盖层会把这些目标钳到屏幕边缘绘制，若仍异常再检查坐标源或相机数据。
 - 可以用 `tools/analyze_runtime_debug.py` 汇总最新日志：`.\.venv\Scripts\python.exe tools\analyze_runtime_debug.py`。
 - 当前覆盖层只使用 PlayerArray；`SpectatePawn` 会先尝试解析真实 Character 链接，未命中时才作为死亡/观战跳过依据。`pa_suspect` 只表示 PlayerArray pawn 反向绑定异常，不再作为跳过依据。
 - `SpectatePawn` 可能是观战壳，也可能仍链接一个真实躲藏者 Character；当前已用 `SpectatePawn + 0x1A0` 做保守兜底，只有真实 Character 的 `LastMyPlayerState` 或 `APawn::PlayerState` 匹配当前 PlayerState 且 `Dead=0` 时才绘制。
@@ -69,6 +70,7 @@
 
 - 覆盖层名称读取顺序为 `CustomPlayerName` FText/FString、`PlayerNamePrivate` FString、“玩家 短 ID”、`PlayerId`，最后回退为“目标 N”。
 - 名称必须通过自然昵称过滤：中文、英文、数字和少量昵称符号可显示；蓝图名、材质名、对象名和乱码候选必须过滤。
+- 日常绘制会短时缓存 PlayerState 名称；只有开启“数据记录”时才写入完整 `name_candidates`。
 - 开启调试页“数据记录”后，先看 `player_array_debug[].name_candidates`、`display_name_source` 和 `display_name_reader`。
 - 如果日志里没有 accepted 名称，使用 `.\.venv\Scripts\python.exe debug_life_state.py names` 扫描 PlayerState 附近的 FString/FText 候选。
 
@@ -77,4 +79,4 @@
 - 先拆高变化、高风险模块，不为单行转发制造抽象。
 - `ui.widgets` 超过当前体量后，优先拆成 `controls.py`、`previews.py`、`dialogs.py`。
 - `TargetSnapshot` 已作为 `reader.iter_players()` 输出结构；后续新增目标字段优先扩展 dataclass，不再扩展裸元组。
-- 雷达已接入覆盖层绘制；后续若继续扩展，应把雷达坐标转换拆出 `overlay`，避免绘制层继续膨胀。
+- 雷达坐标转换已经拆出 `overlay`；后续若继续扩展，保持 `radar.py` 只做纯计算，`overlay.py` 只做绘制。
