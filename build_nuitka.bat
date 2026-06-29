@@ -35,7 +35,7 @@ if not exist "%ICON%" (
 if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
 
 echo [Chameleon Lens] Building with Nuitka...
-"%VENV_PY%" -m nuitka --standalone --onefile --assume-yes-for-downloads --enable-plugin=pyqt5 --windows-console-mode=disable --windows-icon-from-ico="%ICON%" --include-data-files="%ICON%=assets/chameleon.ico" --include-data-files="VERSION=VERSION" --output-dir="%DIST_DIR%" --output-filename="%APP_NAME%.exe" "%ENTRY%"
+"%VENV_PY%" -m nuitka --standalone --onefile --assume-yes-for-downloads --enable-plugin=pyqt5 --windows-console-mode=disable --windows-icon-from-ico="%ICON%" --include-data-files="%ICON%=assets/chameleon.ico" --output-dir="%DIST_DIR%" --output-filename="%APP_NAME%.exe" "%ENTRY%"
 
 if errorlevel 1 exit /b %ERRORLEVEL%
 

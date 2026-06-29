@@ -6,7 +6,6 @@
 
 - `README.md`：用户侧项目说明。
 - `DEVELOPMENT.md`：当前二开约定和重要设计决策。
-- `VERSION`：应用版本号。
 - `bootstrap.py`：启动器，创建 `.venv`、按依赖哈希安装依赖并通过 `python -m chameleon_lens` 启动。
 - `run.bat`：Windows 双击入口，依赖未变化时直接快速启动，必要时转发到 `bootstrap.py`。
 - `main.py`：Nuitka 打包入口，转入 `chameleon_lens.app.main()`。
@@ -48,6 +47,10 @@ python -m chameleon_lens
 - 创建 `ESPRuntime`、`Menu` 和 `Overlay`。
 - 管理自动重连定时器。
 - 管理可配置全局快捷键轮询，默认 `F1` 控制菜单显隐。
+
+### `chameleon_lens/_version.py`
+
+应用版本号单一来源，`chameleon_lens.__version__` 从这里导出。
 
 ### `chameleon_lens/memory.py`
 
