@@ -13,11 +13,16 @@
 - `build_nuitka.bat`：Nuitka 打包脚本，使用 `main.py` 生成 `dist\ChameleonLens.exe` 并清理中间目录。
 - `assets/`：应用图标 SVG/ICO 和资产说明。
 - `requirements.txt`：运行依赖。
-- `config.json`：用户配置，运行时自动生成和保存。
-- `logs/`：调试采样日志。
 - `tools/`：日志分析和图标生成等正式维护工具。
 - `docs/`：架构、代码地图、UI 概念和开发说明。
 - `chameleon_lens/`：主程序包。
+
+## 运行时生成目录
+
+- `config.json`：源码运行时用户配置，已在 `.gitignore` 忽略。
+- `logs/runtime_debug_*.jsonl`：源码运行时调试日志，已在 `.gitignore` 忽略。
+- `dist/`：Nuitka 打包输出目录，已在 `.gitignore` 忽略。
+- `.venv/`：本地虚拟环境，已在 `.gitignore` 忽略。
 
 ## 主程序包
 

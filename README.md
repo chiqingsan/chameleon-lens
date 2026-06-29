@@ -2,6 +2,8 @@
 
 `Chameleon Lens` 是基于 `meccha-esp-master` 的二次开发版本，用于 MECCHA CHAMELEON 的外部覆盖层实验。项目保持纯外部读取方式：不注入 DLL，不依赖 UE4SS，通过 `pymem` 读取游戏进程内存并用 PyQt5 绘制透明覆盖层。
 
+> 本项目仅用于学习、研究和 UI/外部覆盖层技术实验。使用第三方工具可能违反游戏服务条款，请自行承担风险。
+
 ## 当前功能
 
 - 现代化深色浮动菜单，支持拖动和置顶。
@@ -30,11 +32,11 @@
 - Python 3.11+
 - 游戏使用窗口化或无边框窗口模式
 
+## 快速开始
+
 ```bash
 run.bat
 ```
-
-## 使用方式
 
 1. 双击 `run.bat`。
 2. 如果游戏尚未启动，程序会保持运行并在标题栏显示“未连接 · 等待进程”。
@@ -48,9 +50,32 @@ ESP 页只负责屏幕 ESP、目标点、标签和射线开关；雷达设置统
 
 后续运行时，如果 `.venv` 已存在且 `requirements.txt` 未变化，`run.bat` 会跳过启动器和 pip 检查，直接进入主程序。需要生成可执行文件时运行 `build_nuitka.bat`，输出位于 `dist\ChameleonLens.exe`。
 
+## 开发与打包
+
+```bash
+run.bat --check-only
+python -m chameleon_lens --version
+build_nuitka.bat
+```
+
+- 源码运行配置写入项目根目录 `config.json`，该文件不提交到 Git。
+- 源码运行日志写入 `logs/runtime_debug_*.jsonl`，日志文件不提交到 Git。
+- 打包版配置和日志写入 `%LOCALAPPDATA%\Chameleon Lens`。
+
+## 目录结构
+
+- `chameleon_lens/`：主程序包。
+- `assets/`：应用图标资源和来源说明。
+- `docs/`：架构、开发指南、代码地图和 UI 设计记录。
+- `tools/`：日志分析、图标生成等维护工具。
+- `run.bat`：日常启动入口。
+- `bootstrap.py`：启动前置脚本，负责虚拟环境和依赖检查。
+- `main.py`：Nuitka 打包入口。
+- `build_nuitka.bat`：打包脚本。
+
 ## 注意事项
 
 - 目标进程名当前为 `PenguinHotel-Win64-Shipping.exe`。
 - 游戏窗口标题当前按 `Chameleon  ` 查找；如果后续版本标题变化，需要更新 `Overlay._find_game_window()`。
 - 偏移和特征码来自当前 UE5.6 构建，游戏更新后可能需要重新定位。
-- 本项目仅用于学习和研究。使用第三方工具可能违反游戏服务条款，请自行承担风险。
+- 上传公开仓库前请确认上游项目授权，并补充合适的 `LICENSE` 文件。

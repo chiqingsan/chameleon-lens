@@ -1,4 +1,6 @@
 .venv/
+venv/
+env/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -8,9 +10,17 @@ __pycache__/
 .ruff_cache/
 
 dist/
+build/
+*.build/
+*.dist/
+*.onefile-build/
 logs/*.jsonl
 config.json
+.env
+.env.*
 *.tmp
 
+.idea/
+.vscode/
 .DS_Store
 Thumbs.db

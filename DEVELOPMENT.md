@@ -1,8 +1,8 @@
 # Chameleon Lens 开发文档
 
-## 二开目标
+## 维护目标
 
-本目录是 `meccha-esp-master` 的二次开发目录，上游参考目录为 `C:\Users\chiqingsan\Downloads\meccha-esp-master\meccha-esp-master`。后续功能修改应优先落在本目录，避免直接污染上游参考代码。
+本项目基于 `meccha-esp-master` 做二次开发，当前仓库只保留整理后的 Chameleon Lens 代码、文档和维护工具。后续功能修改应优先落在 `chameleon_lens/` 包内，避免重新回到单文件入口或散落脚本结构。公开发布前需要确认上游授权，并补充合适的 `LICENSE` 文件。
 
 当前阶段目标：
 
@@ -22,7 +22,6 @@
 - `VERSION`：应用版本号单一来源。
 - `assets/`：应用图标资源；`chameleon.svg` 来自 Wikimedia Commons，`chameleon.ico` 由工具脚本生成。
 - `requirements.txt`：运行依赖清单，由启动脚本自动安装到 `.venv`。
-- `config.json`：运行时自动生成的用户配置文件，保存菜单开关、颜色、雷达和外观参数。
 - `docs/ARCHITECTURE.md`：当前模块边界和依赖方向。
 - `docs/CODEBASE_MAP.md`：项目文件地图。
 - `docs/DEVELOPMENT_GUIDE.md`：修改、验证和文档同步规则。
@@ -38,6 +37,13 @@
 - `tools/analyze_runtime_debug.py`：汇总 `logs/runtime_debug_*.jsonl`，用于快速判断漏绘制发生在死亡过滤、目标过滤、坐标读取还是投影阶段。
 - `tools/generate_app_icon.py`：从 `assets/chameleon.svg` 生成 Windows `.ico` 图标。
 - `README.md`：面向使用者的中文说明。
+
+## 运行时生成文件
+
+- `config.json`：源码运行时自动生成的用户配置，不提交到 Git。
+- `logs/runtime_debug_*.jsonl`：源码运行时生成的调试日志，不提交到 Git。
+- `dist/`：Nuitka 打包输出目录，不提交到 Git。
+- `.venv/`：本地虚拟环境，不提交到 Git。
 
 ## 设计约定
 
