@@ -25,15 +25,7 @@
 - `docs/ARCHITECTURE.md`：当前模块边界和依赖方向。
 - `docs/CODEBASE_MAP.md`：项目文件地图。
 - `docs/DEVELOPMENT_GUIDE.md`：修改、验证和文档同步规则。
-- `docs/UI_CONCEPT.md`：UI 概念稿说明。
-- `docs/ui_concept_v2.png`：第二版横向矩形 UI 渲染图。
-- `docs/ui_concept_v3.png`：第三版横向深色工具台 UI 渲染图，验证左侧导航和更强卡片层级。
-- `docs/ui_concept_v4.png`：第四版顶部 Tab + 统一青绿色系 UI 渲染图，验证统一配色后的整体观感。
-- `docs/ui_concept_v5.png`：第五版精简仪器面板 UI 渲染图，当前真实菜单按该方向落地，尺寸为 900 x 520。
-- `docs/ui_actual_v2.png`：真实 PyQt 菜单离屏渲染图，用于快速检查布局。
-- `docs/ui_actual_v5.png`：V5 真实 PyQt 菜单离屏渲染图，用于检查窗口尺寸和布局。
-- `docs/ui_hotkeys_tab.png`：快捷键页真实 PyQt 菜单离屏渲染图，用于检查快捷键录入布局。
-- `docs/ui_color_picker.png`：自定义深色颜色选择面板截图。
+- `docs/UI_CONCEPT.md`：UI 概念方向和当前落地说明，仅保留文字记录。
 - `tools/analyze_runtime_debug.py`：汇总 `logs/runtime_debug_*.jsonl`，用于快速判断漏绘制发生在死亡过滤、目标过滤、坐标读取还是投影阶段。
 - `tools/generate_app_icon.py`：从 `assets/chameleon.svg` 生成 Windows `.ico` 图标。
 - `README.md`：面向使用者的中文说明。
