@@ -145,14 +145,14 @@ class LogoBadge(QWidget):
         self.setAutoFillBackground(False)
         logo_path = APP_LOGO_PATH if APP_LOGO_PATH.exists() else APP_ICON_PATH
         self._pixmap = QPixmap(str(logo_path)) if logo_path.exists() else QPixmap()
-        self.setFixedSize(36, 36)
+        self.setFixedSize(32, 32)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         if not self._pixmap.isNull():
             painter.setRenderHint(QPainter.SmoothPixmapTransform)
-            painter.drawPixmap(QRectF(0, 0, 36, 36), self._pixmap, QRectF(self._pixmap.rect()))
+            painter.drawPixmap(QRectF(0, 0, 32, 32), self._pixmap, QRectF(self._pixmap.rect()))
             return
         painter.setPen(QPen(QColor(94, 234, 212, 70), 1.1))
         painter.setBrush(QColor(255, 255, 255, 10))
