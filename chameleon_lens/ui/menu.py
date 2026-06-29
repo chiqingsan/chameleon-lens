@@ -1,7 +1,7 @@
 """主控制菜单。"""
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QListView, QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
+    QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor
@@ -80,25 +80,13 @@ class Menu(QWidget):
                 font-family: "Microsoft YaHei UI";
                 font-size: 13px;
             }
-            QSpinBox, QComboBox {
+            QSpinBox {
                 background-color: rgba(255, 255, 255, 12);
                 color: #f4f7fb;
                 border: 2px solid rgba(148, 163, 184, 20);
                 border-radius: 8px;
                 padding: 5px 10px;
                 min-height: 30px;
-                font-family: "Microsoft YaHei UI";
-                font-size: 12px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #111821;
-                color: #f4f7fb;
-                border: 1px solid rgba(94, 234, 212, 80);
-                border-radius: 8px;
-                padding: 6px;
-                outline: 0;
-                selection-background-color: rgba(94, 234, 212, 38);
-                selection-color: #5eead4;
                 font-family: "Microsoft YaHei UI";
                 font-size: 12px;
             }
@@ -399,7 +387,6 @@ class Menu(QWidget):
 
     def _combo_row(self, label, desc, attr, values):
         combo = MenuComboBox()
-        combo.setView(QListView())
         combo.addItems(values)
         combo.setCurrentText(getattr(self.config, attr))
         combo.currentTextChanged.connect(lambda text, a=attr: setattr(self.config, a, text))
