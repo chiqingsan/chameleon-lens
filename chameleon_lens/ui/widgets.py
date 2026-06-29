@@ -450,7 +450,6 @@ class EspPreview(QWidget):
         painter.drawText(2, 20, "目标视图")
 
         scene = QRectF(2, 36, self.width() - 4, 204)
-        _draw_hud_canvas(painter, scene, self.config.esp_enabled)
         origin = QPointF(scene.center().x(), scene.bottom() - 8)
         hunter = QColor(*self.config.hunter_color)
         survivor = QColor(*self.config.survivor_color)

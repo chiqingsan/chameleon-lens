@@ -30,7 +30,6 @@ class Menu(QWidget):
         self.radar_previews = []
         self.appearance_previews = []
         self.local_ray_switch = None
-        self.local_ray_row = None
         self.slider_controls = {}
         self._config_save_timer = QTimer(self)
         self._config_save_timer.setSingleShot(True)
@@ -142,45 +141,35 @@ class Menu(QWidget):
         body.setSpacing(24)
 
         panel, layout = self._panel("ESP 显示", "目标点、标签和射线控制", 548)
-        basic_controls = [
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(2)
+
+        controls = [
             ("覆盖层", "启用透明窗口绘制", "enabled", None),
             ("ESP 绘制", "控制目标点、标签和射线", "esp_enabled", self._refresh_ray_dependencies),
+            ("猎人 ESP", "显示猎人的点、标签和雷达点", "show_hunter_esp", None),
             ("目标圆点", "以低干扰点位标记目标", "box_esp", None),
-            ("边缘提示", "屏幕外目标钳到边缘显示", "show_edge_indicators", None),
-        ]
-        label_ray_controls = [
             ("名称标签", "显示目标名称", "show_names", None),
             ("距离标签", "显示目标距离", "show_distance", None),
             ("本地标记", "显示自己的点位", "show_local", self._refresh_ray_dependencies),
             ("ESP 射线", "从底部绘制目标指向线", "snap_lines", self._refresh_ray_dependencies),
             ("自身射线", "需开启本地标记与 ESP 射线", "show_local_snap_line", None),
-            ("猎人 ESP", "显示猎人的点、标签和雷达点", "show_hunter_esp", None),
+            ("边缘提示", "屏幕外目标钳到边缘显示", "show_edge_indicators", None),
         ]
+        for index, (label, desc, attr, after_change) in enumerate(controls):
+            switch = self._switch_control(attr, after_change)
+            if attr == "show_local_snap_line":
+                self.local_ray_switch = switch
+            grid.addWidget(self._control_row(label, desc, switch, height=56), index // 2, index % 2)
 
-        layout.addWidget(self._section_label("基础显示"))
-        layout.addLayout(self._switch_grid(basic_controls))
-        layout.addSpacing(12)
-        layout.addWidget(self._section_label("标签与射线"))
-        layout.addLayout(self._switch_grid(label_ray_controls))
+        layout.addLayout(grid)
         layout.addStretch()
         self._refresh_ray_dependencies()
         body.addWidget(panel)
         body.addWidget(self._esp_preview_panel())
         return page
-
-    def _switch_grid(self, controls):
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 8, 0, 0)
-        grid.setHorizontalSpacing(18)
-        grid.setVerticalSpacing(2)
-        for index, (label, desc, attr, after_change) in enumerate(controls):
-            switch = self._switch_control(attr, after_change)
-            row = self._control_row(label, desc, switch, height=56)
-            if attr == "show_local_snap_line":
-                self.local_ray_switch = switch
-                self.local_ray_row = row
-            grid.addWidget(row, index // 2, index % 2)
-        return grid
 
     def _build_radar_page(self):
         page = QWidget()
@@ -359,18 +348,7 @@ class Menu(QWidget):
         text_col.addStretch()
         row.addLayout(text_col, 1)
         row.addWidget(control)
-        frame.title_label = title_label
-        frame.desc_label = desc_label
-        frame.control = control
         return frame
-
-    def _set_row_enabled(self, row, enabled):
-        row.setEnabled(enabled)
-        title_color = "#f4f7fb" if enabled else "#6b7687"
-        desc_color = "#687486" if enabled else "#3f4a5a"
-        row.title_label.setStyleSheet(f"color: {title_color}; font-size: 13px; font-weight: 600;")
-        row.desc_label.setStyleSheet(f"color: {desc_color}; font-size: 10px; font-weight: 400;")
-        row.control.setEnabled(enabled)
 
     def _info_row(self, label, value):
         frame = QFrame()
@@ -516,13 +494,12 @@ class Menu(QWidget):
         save_config(self.config)
 
     def _refresh_ray_dependencies(self):
-        if not self.local_ray_switch or not self.local_ray_row:
+        if not self.local_ray_switch:
             return
         enabled = self.config.esp_enabled and self.config.snap_lines and self.config.show_local
-        self._set_row_enabled(self.local_ray_row, enabled)
+        self.local_ray_switch.setEnabled(enabled)
         tip = "" if enabled else "需先开启 ESP 绘制、本地标记和 ESP 射线"
         self.local_ray_switch.setToolTip(tip)
-        self.local_ray_row.setToolTip(tip)
 
     def _refresh_preview(self):
         for preview in self.esp_previews:
