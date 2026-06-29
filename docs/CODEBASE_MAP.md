@@ -9,7 +9,7 @@
 - `bootstrap.py`：启动器，创建 `.venv`、按依赖哈希安装依赖并通过 `python -m chameleon_lens` 启动。
 - `run.bat`：Windows 双击入口，依赖未变化时直接快速启动，必要时转发到 `bootstrap.py`。
 - `main.py`：Nuitka 打包入口，转入 `chameleon_lens.app.main()`。
-- `build_nuitka.bat`：Nuitka 打包脚本，使用 `main.py` 生成 `dist\ChameleonLens.exe` 并清理中间目录。
+- `build_nuitka.bat`：Nuitka 打包脚本，使用 `main.py` 生成 `dist\ChameleonLens_版本号_HHmm.exe` 并清理中间目录。
 - `assets/`：应用图标源图、ICO、菜单 Logo 和资产说明。
 - `requirements.txt`：运行依赖。
 - `tools/`：日志分析和图标生成等正式维护工具。

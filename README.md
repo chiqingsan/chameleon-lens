@@ -48,7 +48,7 @@ ESP 页只负责屏幕 ESP、目标点、标签和射线开关；雷达设置统
 
 首次运行时，批处理会自动检查 Python 3.11+、创建 `.venv`、安装 `requirements.txt` 中的依赖，然后通过 `python -m chameleon_lens` 启动主程序。根目录不再保留旧版 `esp.py` 兼容入口；Nuitka 打包使用 `main.py` 作为干净入口。
 
-后续运行时，如果 `.venv` 已存在且 `requirements.txt` 未变化，`run.bat` 会跳过启动器和 pip 检查，直接进入主程序。需要生成可执行文件时运行 `build_nuitka.bat`，输出位于 `dist\ChameleonLens.exe`。
+后续运行时，如果 `.venv` 已存在且 `requirements.txt` 未变化，`run.bat` 会跳过启动器和 pip 检查，直接进入主程序。需要生成可执行文件时运行 `build_nuitka.bat`，输出位于 `dist\ChameleonLens_版本号_HHmm.exe`。
 
 ## 开发与打包
 
