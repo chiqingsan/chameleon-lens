@@ -21,6 +21,10 @@ class DebugDataRecorder:
             self._path = LOG_DIR / f"runtime_debug_{stamp}.jsonl"
         return self._path
 
+    def is_due(self):
+        """只在到达记录间隔时才构造重型诊断快照。"""
+        return time.monotonic() - self._last_write >= self.interval_seconds
+
     def write(self, payload):
         now = time.monotonic()
         if now - self._last_write < self.interval_seconds:

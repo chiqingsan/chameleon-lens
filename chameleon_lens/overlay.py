@@ -17,8 +17,8 @@ from .runtime import ESPRuntime
 # 覆盖层
 # ---------------------------------------------------------------------------
 class Overlay(QWidget):
-    PAINT_INTERVAL_MS = 16
-    SNAPSHOT_INTERVAL_MS = 33
+    PAINT_INTERVAL_MS = 11
+    SNAPSHOT_INTERVAL_MS = 11
     GEOMETRY_INTERVAL_MS = 250
 
     def __init__(self, runtime: ESPRuntime, config: Config, on_status_changed=None):
@@ -39,14 +39,17 @@ class Overlay(QWidget):
         self._snapshot_esp = None
         self._snapshot_camera = None
         self._snapshot_players = []
+        self._snapshot_collect_debug = False
         self._last_sample_ms = 0.0
         self._last_paint_ms = 0.0
 
         self.paint_timer = QTimer(self)
+        self.paint_timer.setTimerType(Qt.PreciseTimer)
         self.paint_timer.timeout.connect(self.update)
         self.paint_timer.start(self.PAINT_INTERVAL_MS)
 
         self.sample_timer = QTimer(self)
+        self.sample_timer.setTimerType(Qt.PreciseTimer)
         self.sample_timer.timeout.connect(self.refresh_snapshot)
         self.sample_timer.start(self.SNAPSHOT_INTERVAL_MS)
 
@@ -88,6 +91,7 @@ class Overlay(QWidget):
             self._snapshot_esp = None
             self._snapshot_camera = None
             self._snapshot_players = []
+            self._snapshot_collect_debug = False
             return
 
         esp = self.runtime.esp
@@ -95,6 +99,7 @@ class Overlay(QWidget):
             self._snapshot_esp = None
             self._snapshot_camera = None
             self._snapshot_players = []
+            self._snapshot_collect_debug = False
             return
 
         started = time.perf_counter()
@@ -103,22 +108,26 @@ class Overlay(QWidget):
             if not cam:
                 self._snapshot_camera = None
                 self._snapshot_players = []
+                self._snapshot_collect_debug = False
                 return
+            collect_debug = self.config.record_debug_data and self.debug_recorder.is_due()
             players = list(esp.iter_players(
                 include_local=self.config.show_local,
                 players_only=True,
-                collect_debug=self.config.record_debug_data,
+                collect_debug=collect_debug,
             ))
         except Exception as exc:
             self._snapshot_esp = None
             self._snapshot_camera = None
             self._snapshot_players = []
+            self._snapshot_collect_debug = False
             self._mark_disconnected(exc)
             return
 
         self._snapshot_esp = esp
         self._snapshot_camera = cam
         self._snapshot_players = players
+        self._snapshot_collect_debug = collect_debug
         self._last_sample_ms = (time.perf_counter() - started) * 1000.0
         self.update()
 
@@ -144,6 +153,11 @@ class Overlay(QWidget):
             count = 0
             debug_targets = []
             players = self._snapshot_players
+            collect_frame_debug = (
+                self.config.record_debug_data
+                and self._snapshot_collect_debug
+                and self.debug_recorder.is_due()
+            )
 
             if self.config.esp_enabled:
                 for player in players:
@@ -180,6 +194,37 @@ class Overlay(QWidget):
                                 tx, ty = self._fit_label_point(sx + self.config.dot_radius + 6, sy, w, h)
                                 painter.drawText(int(tx), int(ty), text)
 
+                            if collect_frame_debug:
+                                debug_targets.append({
+                                    "idx": idx,
+                                    "player_id": target["player_id"],
+                                    "short_id": target["short_id"],
+                                    "name": label,
+                                    "local": is_local,
+                                    "role": target["role"],
+                                    "stable_role": target["stable_role"],
+                                    "filter_role": target["filter_role"],
+                                    "converted_to_hunter": target["converted_to_hunter"],
+                                    "converted_hunter_age": target["converted_hunter_age"],
+                                    "form": target["form"],
+                                    "class": target["class_name"],
+                                    "player_state": target["player_state"],
+                                    "pawn": target["pawn"],
+                                    "position_jump": target["position_jump"],
+                                    "world": self._round_pos(pos),
+                                    "screen": [round(float(sx), 2), round(float(sy), 2)],
+                                    "edge": True,
+                                    "projection": projection,
+                                    "distance_m": int(dist(pos, cam["loc"]) / 100),
+                                    "dot": bool(self.config.box_esp),
+                                    "ray": bool(should_draw_ray),
+                                    "drawn": True,
+                                    "reason": projection.get("reason") or "not_visible",
+                                })
+                            count += 1
+                            continue
+
+                        if collect_frame_debug:
                             debug_targets.append({
                                 "idx": idx,
                                 "player_id": target["player_id"],
@@ -189,43 +234,18 @@ class Overlay(QWidget):
                                 "role": target["role"],
                                 "stable_role": target["stable_role"],
                                 "filter_role": target["filter_role"],
+                                "converted_to_hunter": target["converted_to_hunter"],
+                                "converted_hunter_age": target["converted_hunter_age"],
                                 "form": target["form"],
                                 "class": target["class_name"],
                                 "player_state": target["player_state"],
                                 "pawn": target["pawn"],
                                 "position_jump": target["position_jump"],
                                 "world": self._round_pos(pos),
-                                "screen": [round(float(sx), 2), round(float(sy), 2)],
-                                "edge": True,
                                 "projection": projection,
-                                "distance_m": int(dist(pos, cam["loc"]) / 100),
-                                "dot": bool(self.config.box_esp),
-                                "ray": bool(should_draw_ray),
-                                "drawn": True,
+                                "drawn": False,
                                 "reason": projection.get("reason") or "not_visible",
                             })
-                            count += 1
-                            continue
-
-                        debug_targets.append({
-                            "idx": idx,
-                            "player_id": target["player_id"],
-                            "short_id": target["short_id"],
-                            "name": label,
-                            "local": is_local,
-                            "role": target["role"],
-                            "stable_role": target["stable_role"],
-                            "filter_role": target["filter_role"],
-                            "form": target["form"],
-                            "class": target["class_name"],
-                            "player_state": target["player_state"],
-                            "pawn": target["pawn"],
-                            "position_jump": target["position_jump"],
-                            "world": self._round_pos(pos),
-                            "projection": projection,
-                            "drawn": False,
-                            "reason": projection.get("reason") or "not_visible",
-                        })
                         continue
                     sx, sy = screen_info
 
@@ -248,27 +268,30 @@ class Overlay(QWidget):
                         text = " | ".join(label_parts)
                         painter.drawText(int(sx + self.config.dot_radius + 4), int(sy), text)
 
-                    debug_targets.append({
-                        "idx": idx,
-                        "player_id": target["player_id"],
-                        "short_id": target["short_id"],
-                        "name": label,
-                        "local": is_local,
-                        "role": target["role"],
-                        "stable_role": target["stable_role"],
-                        "filter_role": target["filter_role"],
-                        "form": target["form"],
-                        "class": target["class_name"],
-                        "player_state": target["player_state"],
-                        "pawn": target["pawn"],
-                        "position_jump": target["position_jump"],
-                        "world": self._round_pos(pos),
-                        "screen": [round(float(sx), 2), round(float(sy), 2)],
-                        "distance_m": int(dist(pos, cam["loc"]) / 100),
-                        "dot": bool(self.config.box_esp),
-                        "ray": bool(should_draw_ray),
-                        "drawn": True,
-                    })
+                    if collect_frame_debug:
+                        debug_targets.append({
+                            "idx": idx,
+                            "player_id": target["player_id"],
+                            "short_id": target["short_id"],
+                            "name": label,
+                            "local": is_local,
+                            "role": target["role"],
+                            "stable_role": target["stable_role"],
+                            "filter_role": target["filter_role"],
+                            "converted_to_hunter": target["converted_to_hunter"],
+                            "converted_hunter_age": target["converted_hunter_age"],
+                            "form": target["form"],
+                            "class": target["class_name"],
+                            "player_state": target["player_state"],
+                            "pawn": target["pawn"],
+                            "position_jump": target["position_jump"],
+                            "world": self._round_pos(pos),
+                            "screen": [round(float(sx), 2), round(float(sy), 2)],
+                            "distance_m": int(dist(pos, cam["loc"]) / 100),
+                            "dot": bool(self.config.box_esp),
+                            "ray": bool(should_draw_ray),
+                            "drawn": True,
+                        })
                     count += 1
 
             if self.config.show_debug:
@@ -286,7 +309,8 @@ class Overlay(QWidget):
                 painter.drawText(14, 60, perf)
 
             radar_points = self._draw_radar(painter, w, h, cam, players)
-            self._record_debug_frame(esp, cam, players, debug_targets, radar_points, count, w, h)
+            if collect_frame_debug:
+                self._record_debug_frame(esp, cam, players, debug_targets, radar_points, count, w, h)
         finally:
             self._last_paint_ms = (time.perf_counter() - started) * 1000.0
 
@@ -311,6 +335,8 @@ class Overlay(QWidget):
                 "role": player.role,
                 "stable_role": player.stable_role,
                 "filter_role": player.filter_role,
+                "converted_to_hunter": bool(getattr(player, "converted_to_hunter", False)),
+                "converted_hunter_age": float(getattr(player, "converted_hunter_age", 0.0)),
                 "form": player.form,
                 "source": player.source,
                 "position_jump": bool(player.position_jump),
@@ -329,6 +355,8 @@ class Overlay(QWidget):
             "role": "unknown",
             "stable_role": "unknown",
             "filter_role": "unknown",
+            "converted_to_hunter": False,
+            "converted_hunter_age": 0.0,
             "form": "unknown",
             "source": "tuple",
             "position_jump": False,
@@ -348,12 +376,20 @@ class Overlay(QWidget):
     def _target_color(self, target):
         if target["is_local"]:
             return self.config.local_color
-        role = target.get("filter_role") or target.get("role")
+        # 颜色表达当前读到的明确身份；过滤仍单独使用 filter_role 防止瞬时切换漏绘制。
+        role = self._current_role_for_display(target)
         if role == "hunter":
             return self.config.hunter_color
         if role == "survivor":
             return self.config.survivor_color
         return self.config.enemy_color
+
+    @staticmethod
+    def _current_role_for_display(target):
+        role = target.get("role") or ""
+        if role in ("hunter", "survivor"):
+            return role
+        return target.get("filter_role") or role
 
     @staticmethod
     def _hex_ptr(value):
@@ -562,6 +598,8 @@ class Overlay(QWidget):
                 "role": target["role"],
                 "stable_role": target["stable_role"],
                 "filter_role": target["filter_role"],
+                "converted_to_hunter": target["converted_to_hunter"],
+                "converted_hunter_age": target["converted_hunter_age"],
                 "form": target["form"],
                 "x": radar["x"],
                 "y": radar["y"],

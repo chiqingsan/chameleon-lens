@@ -31,6 +31,8 @@ class TargetSnapshot:
     form: str = "unknown"
     source: str = "unknown"
     position_jump: bool = False
+    converted_to_hunter: bool = False
+    converted_hunter_age: float = 0.0
 
     def __iter__(self):
         yield self.is_local
@@ -214,6 +216,7 @@ class MecchaESP:
         self._last_position_jumps = []
         self._player_state_tracker = {}
         self._player_name_cache = {}
+        self._last_world_signature = None
 
     def _scan_guobject_array(self):
         scanner = PatternScanner(self.pm, self.MODULE_NAME)
@@ -331,6 +334,22 @@ class MecchaESP:
             return ""
         cls = rp(self.pm, obj + OFFSETS["UObjectBase::ClassPrivate"])
         return self.objects._obj_name(cls) if cls else ""
+
+    def _object_name(self, obj):
+        """读取 UObject 名称，用于日志里识别地图、GameState 和模式指纹。"""
+        if not obj:
+            return ""
+        try:
+            return self.objects._obj_name(obj) or ""
+        except Exception:
+            return ""
+
+    def _safe_class_name(self, obj):
+        """调试上下文读取不能影响目标枚举，失败时只返回空字符串。"""
+        try:
+            return self._class_name(obj)
+        except Exception:
+            return ""
 
     def _pawn_controller(self, pawn):
         if not pawn:
@@ -671,11 +690,23 @@ class MecchaESP:
             "last_non_spectator_role": "",
             "last_non_spectator_pawn": 0,
             "last_non_spectator_pos": None,
+            "converted_to_hunter": False,
+            "converted_hunter_since": 0.0,
         })
         item["last_seen"] = now
 
         if item.get("current_role") != role:
             item["previous_role"] = item.get("current_role", "")
+            if role == "hunter" and (
+                item.get("current_role") == "survivor"
+                or item.get("stable_role") == "survivor"
+                or item.get("last_non_spectator_role") == "survivor"
+            ):
+                item["converted_to_hunter"] = True
+                item["converted_hunter_since"] = now
+            elif role == "survivor" and item.get("current_role") != "spectator":
+                item["converted_to_hunter"] = False
+                item["converted_hunter_since"] = 0.0
             item["current_role"] = role
             item["role_since"] = now
 
@@ -702,7 +733,35 @@ class MecchaESP:
             "last_non_spectator_role": item.get("last_non_spectator_role", ""),
             "last_non_spectator_pawn": self._debug_hex(item.get("last_non_spectator_pawn", 0)),
             "last_non_spectator_pos": self._debug_pos(item.get("last_non_spectator_pos")),
+            "converted_to_hunter": bool(item.get("converted_to_hunter", False)),
+            "converted_hunter_age": round(float(now - item.get("converted_hunter_since", now)), 3)
+            if item.get("converted_hunter_since") else 0.0,
         }
+
+    def _reset_match_trackers(self):
+        """地图/对局上下文变化时清理跨局缓存，避免旧身份污染新局。"""
+        self._pawn_life_tracker.clear()
+        self._target_position_cache.clear()
+        self._player_state_tracker.clear()
+        self._player_name_cache.clear()
+
+    def _update_world_signature(self, world, world_name, game_state, game_state_name, level_name):
+        signature = (
+            self._debug_hex(world),
+            world_name or "",
+            self._debug_hex(game_state),
+            game_state_name or "",
+            level_name or "",
+        )
+        previous = self._last_world_signature
+        if previous is None:
+            self._last_world_signature = signature
+            return {"type": "initial", "from": [], "to": list(signature)}
+        if previous != signature:
+            self._reset_match_trackers()
+            self._last_world_signature = signature
+            return {"type": "world_context_changed", "from": list(previous), "to": list(signature)}
+        return {}
 
     def _cleanup_player_state_tracker(self, active_player_states, now):
         stale = [
@@ -740,7 +799,12 @@ class MecchaESP:
 
     def _spectate_linked_character_info(self, spectate_pawn, player_state):
         """SpectatePawn 可能只是观战壳；若它指向真实角色，就用真实角色绘制。"""
-        info = {"actor": 0, "reason": "no_linked_actor"}
+        info = {
+            "actor": 0,
+            "reason": "no_linked_actor",
+            "spectate_class": self._safe_class_name(spectate_pawn),
+            "spectate_position": self._debug_pos(self._actor_position(spectate_pawn)),
+        }
         if not spectate_pawn:
             return info
         try:
@@ -758,26 +822,34 @@ class MecchaESP:
 
         cls_name = self._class_name(linked)
         info["class"] = cls_name
+        role, form = self._class_role_info(cls_name)
+        info["role"] = role
+        info["form"] = form
         if not cls_name or "Character" not in cls_name or "Spectate" in cls_name:
             info["reason"] = "not_character"
             return info
 
-        last_ps = self._read_object_property_ptr(linked, "LastMyPlayerState")
         actor_ps = self._pawn_playerstate(linked)
+        last_ps = self._read_object_property_ptr(linked, "LastMyPlayerState")
+        controller = self._pawn_controller(linked)
         info["last_player_state"] = self._debug_hex(last_ps)
         info["actor_player_state"] = self._debug_hex(actor_ps)
+        info["controller"] = self._debug_hex(controller)
+        # 当前先优先保证躲藏方不漏绘制：普通模式死亡后可能会继续显示旧 Character。
+        # 后续拿到稳定模式指纹后，再把普通模式和特殊模式拆成不同策略。
         if player_state and last_ps != player_state and actor_ps != player_state:
             info["reason"] = "player_state_mismatch"
             return info
 
         dead = self._read_object_property_u8(linked, "Dead")
         info["dead"] = dead
-        if dead:
-            info["reason"] = "linked_dead"
-            return info
 
-        pos = self._actor_position(linked)
+        pos_info = self._actor_position_info(linked)
+        pos = pos_info["position"]
         info["position"] = self._debug_pos(pos)
+        info["position_source"] = pos_info["source"]
+        info["root"] = self._debug_hex(pos_info.get("root", 0))
+        info["mesh"] = self._debug_hex(pos_info.get("mesh", 0))
         if pos is None or self._is_origin_position(pos):
             info["reason"] = "invalid_position"
             return info
@@ -863,6 +935,7 @@ class MecchaESP:
             self._last_iter_stats = {"pa_total": 0, "pa_valid": 0, "pa_dead": 0,
                                      "pa_orphan": 0, "pa_suspect": 0,
                                      "pa_linked": 0,
+                                     "pa_suppressed": 0,
                                      "level_total": 0, "level_valid": 0,
                                      "level_orphan": 0,
                                      "rendered": 0}
@@ -876,9 +949,21 @@ class MecchaESP:
         pc = self._get_local_controller(world)
         local_pawn = rp(self.pm, pc + self.offsets["APlayerController::AcknowledgedPawn"]) if pc else 0
         local_ps = rp(self.pm, pc + self.offsets["AController::PlayerState"]) if pc else 0
+        persistent_level_off = self.offsets.get("UWorld::PersistentLevel", 0x30)
+        persistent_level = rp(self.pm, world + persistent_level_off) if world else 0
+        world_name = self._object_name(world)
+        world_class = self._safe_class_name(world)
+        game_state_name = self._object_name(gamestate)
+        game_state_class = self._safe_class_name(gamestate)
+        persistent_level_name = self._object_name(persistent_level)
+        persistent_level_class = self._safe_class_name(persistent_level)
+        context_event = self._update_world_signature(
+            world, world_name, gamestate, game_state_name, persistent_level_name
+        )
 
         stats = {"pa_total": 0, "pa_valid": 0, "pa_dead": 0, "pa_orphan": 0, "pa_suspect": 0,
                  "pa_linked": 0,
+                 "pa_suppressed": 0,
                  "level_total": 0, "level_valid": 0,
                  "level_orphan": 0,
                  "rendered": 0}
@@ -892,10 +977,21 @@ class MecchaESP:
         self._last_position_jumps = []
         self._last_iter_context = {
             "world": self._debug_hex(world),
+            "world_name": world_name,
+            "world_class": world_class,
             "game_state": self._debug_hex(gamestate),
+            "game_state_name": game_state_name,
+            "game_state_class": game_state_class,
+            "persistent_level": self._debug_hex(persistent_level),
+            "persistent_level_name": persistent_level_name,
+            "persistent_level_class": persistent_level_class,
+            "context_event": context_event,
             "local_controller": self._debug_hex(pc),
+            "local_controller_class": self._safe_class_name(pc),
             "local_player_state": self._debug_hex(local_ps),
+            "local_player_state_class": self._safe_class_name(local_ps),
             "local_pawn": self._debug_hex(local_pawn),
+            "local_pawn_class": self._safe_class_name(local_pawn),
         }
         self._last_playerarray_debug = playerarray_debug
         self._last_level_debug = level_debug
@@ -939,6 +1035,8 @@ class MecchaESP:
                 "role_age": role_state.get("role_age", 0.0),
                 "role_pending": role_state.get("role_pending", False),
                 "role_previous": role_state.get("role_previous", ""),
+                "converted_to_hunter": role_state.get("converted_to_hunter", False),
+                "converted_hunter_age": role_state.get("converted_hunter_age", 0.0),
                 "form": form,
                 "position": self._debug_pos(pos),
                 "position_source": pos_info["source"],
@@ -980,6 +1078,8 @@ class MecchaESP:
                 form=form,
                 source=source,
                 position_jump=jumped,
+                converted_to_hunter=bool(role_state.get("converted_to_hunter", False)),
+                converted_hunter_age=float(role_state.get("converted_hunter_age", 0.0)),
             )
 
         # Local marker for calibration.
@@ -1005,6 +1105,8 @@ class MecchaESP:
                     filter_role=role_state.get("filter_role", role),
                     form=form,
                     source="local",
+                    converted_to_hunter=bool(role_state.get("converted_to_hunter", False)),
+                    converted_hunter_age=float(role_state.get("converted_hunter_age", 0.0)),
                 )
 
         # Pass 1: GameState->PlayerArray. This is the stable player source;
@@ -1085,6 +1187,14 @@ class MecchaESP:
                         if linked_info.get("reason") == "linked_character" and linked_actor and linked_actor not in seen:
                             linked_cls = linked_info.get("class") or self._class_name(linked_actor)
                             linked_role, linked_form = self._class_role_info(linked_cls)
+                            if role_state.get("converted_to_hunter") and linked_role == "survivor":
+                                stats["pa_suppressed"] += 1
+                                linked_info["reason"] = "suppressed_after_hunter_conversion"
+                                linked_info["suppressed_by"] = "converted_to_hunter"
+                                pa_item["result"] = "skip"
+                                pa_item["reason"] = "suppressed_after_hunter_conversion"
+                                playerarray_debug.append(pa_item)
+                                continue
                             linked_pos = self._actor_position(linked_actor)
                             role_state = self._update_player_state_tracker(
                                 ps, linked_role, linked_form, linked_cls, linked_actor, linked_pos, now
@@ -1130,8 +1240,7 @@ class MecchaESP:
         # Pass 2: Persistent level actors (fallback / merge).
         # ESP uses this to catch players PlayerArray hasn't updated yet.
         if not players_only:
-            persistent_level_off = self.offsets.get("UWorld::PersistentLevel", 0x30)
-            level = rp(self.pm, world + persistent_level_off)
+            level = persistent_level
             if level:
                 actors_off = self.offsets.get("ULevel::Actors", 0xA0)
                 actors_data, actors_count, _ = read_array(self.pm, level + actors_off)

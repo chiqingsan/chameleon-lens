@@ -65,15 +65,17 @@ build_nuitka.bat
 - 用 `tools/analyze_runtime_debug.py` 汇总最新日志，必要时再补充专门诊断脚本。
 - 对比 PlayerArray、Level Actor、`player_state`、`controller`、`display_name` 和位置变化。
 - 如果是“漏绘制”或卡顿，优先开启调试页“数据记录”，检查 `logs/runtime_debug_*.jsonl` 中的 `performance`、`stats`、`projection_reasons`、`player_array_debug`、`level_actor_debug`、`emitted_targets` 和 `targets[].projection`。
-- 定位顺序：先看 `performance.sample_ms` 和 `performance.paint_ms`，确认压力来自采样还是绘制；再看 `pa_dead` 是否异常增加，它表示 PlayerArray pawn 类名包含 `Spectate` 且没有找到可用真实 Character。再看 `pa_linked` 与 `player_array_debug[].spectate_link`，它表示 `SpectatePawn` 指向了仍可绘制的真实 Character。接着看 `player_array_debug[].reason` 是否大量出现 `no_pawn`、`dead_or_spectator`；然后看 `role/stable_role/filter_role` 是否发生身份切换或防抖；最后看 `emitted_targets[].position_source`、`targets[].reason` 和 `edge_reasons`。`behind_camera` / `outside_view*` 代表目标已读到但不在当前屏幕内；开启“边缘提示”时覆盖层会把这些目标钳到屏幕边缘绘制，若仍异常再检查坐标源或相机数据。
+- 定位顺序：先看 `reader_context` 里的 `game_state_class`、`game_state_name`、`persistent_level_name`、`local_pawn_class` 和 `context_event`，确认当前是哪类对局模式以及是否刚切换 world/GameState/Level；再看 `performance.sample_ms` 和 `performance.paint_ms`，确认压力来自采样还是绘制；接着看 `pa_dead` 是否异常增加，它表示 PlayerArray pawn 类名包含 `Spectate` 且没有找到可用真实 Character。再看 `pa_linked`、`pa_suppressed` 与 `player_array_debug[].spectate_link`，它们分别表示 `SpectatePawn` 指向了仍可绘制的真实 Character，以及同一 PlayerState 已转猎人后旧躲藏链接被抑制。接着看 `player_array_debug[].reason` 是否大量出现 `no_pawn`、`dead_or_spectator`、`suppressed_after_hunter_conversion`；然后看 `role/stable_role/filter_role` 是否发生身份切换或防抖；最后看 `emitted_targets[].position_source`、`targets[].reason` 和 `edge_reasons`。`behind_camera` / `outside_view*` 代表目标已读到但不在当前屏幕内；开启“边缘提示”时覆盖层会把这些目标钳到屏幕边缘绘制，若仍异常再检查坐标源或相机数据。
 - 可以用 `tools/analyze_runtime_debug.py` 汇总最新日志：`.\.venv\Scripts\python.exe tools\analyze_runtime_debug.py`。
 - 当前覆盖层只使用 PlayerArray；`SpectatePawn` 会先尝试解析真实 Character 链接，未命中时才作为死亡/观战跳过依据。`pa_suspect` 只表示 PlayerArray pawn 反向绑定异常，不再作为跳过依据。
-- `SpectatePawn` 可能是观战壳，也可能仍链接一个真实躲藏者 Character；当前已用 `SpectatePawn + 0x1A0` 做保守兜底，只有真实 Character 的 `LastMyPlayerState` 或 `APawn::PlayerState` 匹配当前 PlayerState 且 `Dead=0` 时才绘制。
+- `SpectatePawn` 可能是观战壳，也可能仍链接一个真实躲藏者 Character；当前先优先保证躲藏方不漏绘制，使用 `SpectatePawn + 0x1A0` 做宽松兜底，只要真实 Character 的 `LastMyPlayerState` 或 `APawn::PlayerState` 匹配当前 PlayerState 且坐标有效就绘制。`Dead` 字段只写入日志，不再作为临时过滤条件。感染模式中如果同一 PlayerState 已经从躲藏者切到猎人，再遇到旧 `SpectatePawn` 链接的躲藏者 Character，会跳过并记录 `pa_suppressed` / `suppressed_after_hunter_conversion`。普通模式死亡观战后仍可能继续显示旧 Character，后续需要结合 `reader_context` 的模式指纹再拆分普通模式和特殊模式策略。
 - 不要用“目标静止不动”作为死亡判定依据；本游戏是躲猫猫类玩法，静止是正常行为。
+- 玩法模式语义：普通模式中，开局若干猎人寻找若干躲藏方，被击杀的躲藏方进入观战视角；感染模式中，开局若干猎人寻找若干躲藏方，被击杀的躲藏方会变为猎人，出现猎人建模、视角切换为猎人并操控猎人角色，身份只会从躲藏方切到猎人一次；双重模式中，房间内若干玩家先全部躲藏，随后这些玩家变为猎人开始寻找。双重模式当前不做专门优化；关闭“猎人 ESP”时，双重后半段全员变猎人可能表现为没有 ESP。
 - 角色/形态只来自 class 名称：`Hunter`、`Survivor`、`Spectate` 和 `Cube`、`Base` 等 token 会进入 `role/form`。同一局不同模式下身份会合法切换，不能永久锁定“曾经是躲藏者”的身份。
-- `stable_role` 和 `filter_role` 是 PlayerState 级短时身份防抖结果；关闭“猎人 ESP”时覆盖层按 `filter_role` 过滤，而不是直接用瞬时 `role`。
+- `stable_role` 和 `filter_role` 是 PlayerState 级短时身份防抖结果；关闭“猎人 ESP”时覆盖层按 `filter_role` 过滤，而不是直接用瞬时 `role`。`converted_to_hunter` 只表示同一 PlayerState 已观察到躲藏者到猎人的转换，用于感染模式抑制旧躲藏者链接，不代表永久阵营。
 - `player_state` 或 `pawn` 指针会生成 `short_id`，比 PlayerArray 的 `idx` 更适合作为临时目标标识；UI 显示为“玩家 短 ID”，不使用 `#xxxxxx` 格式。
 - `position_jumps` 表示同一目标位置大跳变，通常是回合重置、地图切换或目标实例重建；出现时相关缓存会被清理。
+- `context_event` 表示 world/GameState/Level 上下文切换；出现切换时会清理跨局身份、名称、pawn 生命周期和位置缓存，避免上一局的身份状态污染下一局。
 
 涉及玩家昵称：
 

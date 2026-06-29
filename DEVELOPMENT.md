@@ -16,7 +16,7 @@
 - `chameleon_lens/`：主程序包，按内存读取、目标读取、配置、运行时、UI、覆盖层和入口拆分。
 - `chameleon_lens/radar.py`：雷达坐标转换，把目标相对相机位置投影到雷达盘面。
 - `main.py`：Nuitka 打包入口，源码开发和日常启动优先使用 `python -m chameleon_lens`。
-- `run.bat`：Windows 一键启动脚本，依赖未变化时直接快速启动，首次运行或依赖变化时转交 `bootstrap.py`。
+- `run.bat`：Windows 一键启动脚本，检测到 `.venv` 和依赖 stamp 后直接快速启动；首次运行、缺少 stamp 或手动 `--check-only` 时转交 `bootstrap.py`。
 - `bootstrap.py`：启动器，负责创建 `.venv`、按 `requirements.txt` 哈希安装依赖，最终通过 `python -m chameleon_lens` 进入主程序。
 - `build_nuitka.bat`：Nuitka 打包脚本，输出 `dist\ChameleonLens_版本号_HHmm.exe`，成功后清理 Nuitka 中间目录。
 - `chameleon_lens/_version.py`：应用版本号单一来源。
@@ -44,7 +44,7 @@
 - 目标进程未出现时，状态只显示在菜单标题栏右上角；覆盖层保持透明，不绘制等待提示卡。
 - 进程连接失败属于正常状态：`ESPRuntime.connect_once()` 捕获异常、更新状态，并由入口定时器重试。
 - 应用入口通过 Windows 命名互斥体 `Global\ChameleonLensMecchaEsp` 做单例保护，重复启动会直接退出。
-- 运行依赖统一通过项目内 `.venv` 管理，用户入口优先使用 `run.bat`。`run.bat` 通过 `.venv\.requirements.stamp` 对比 `requirements.txt` 哈希，依赖未变化时直接启动主程序，避免每次启动都进入 pip 检查。
+- 运行依赖统一通过项目内 `.venv` 管理，用户入口优先使用 `run.bat`。`run.bat` 只检查 `.venv\.requirements.stamp` 是否存在，存在时直接启动主程序，避免每次启动都拉起 PowerShell 算哈希或进入 pip 检查；修改 `requirements.txt` 后用 `run.bat --check-only` 刷新依赖 stamp。
 - 配置持久化使用 JSON。源码运行时写入项目根目录 `config.json`，便于开发排查；Nuitka 打包版写入 `%LOCALAPPDATA%\Chameleon Lens\config.json`，日志写入 `%LOCALAPPDATA%\Chameleon Lens\logs`，避免 onefile 临时目录或程序目录权限导致数据丢失。保存采用临时文件替换，避免写入中断导致配置损坏。
 - UI 信息架构按 `ESP / 雷达 / 外观 / 快捷键 / 调试` 五个顶部页签组织：ESP 页只放目标点、标签和射线控制，雷达页只放雷达与参数，外观页只放透明度、点半径和颜色，快捷键页只放全局开关按键。
 - ESP 页使用两列开关布局和 ESP 效果预览；雷达预览只出现在雷达页，避免一个页签同时承载两个主题。
@@ -57,17 +57,18 @@
 - 自绘按钮、页签、关闭按钮和调色板候选色使用轻量 hover 过渡；滑条在 hover/拖动时改变轨道与滑块状态，提升可操作感但不做夸张动效。
 - `enabled` 是覆盖层总开关；`esp_enabled` 只控制屏幕 ESP 绘制，关闭后目标点、标签、射线和边缘提示都不画，但雷达仍由 `radar_enabled` 独立控制。
 - 全局快捷键由 `hotkey_menu_toggle`、`hotkey_overlay_toggle`、`hotkey_esp_toggle`、`hotkey_radar_toggle` 四个配置字段控制；菜单显隐默认 `F1`，其余默认为空。快捷键录入期间入口轮询会暂停，避免按下当前热键时误触发菜单隐藏或开关切换。
-- 覆盖层分离三个刷新节奏：绘制约 60 FPS，目标快照采样约 30 FPS，窗口位置和尺寸约每 250ms 更新一次。不要直接把绘制 timer 拉高来解决感知问题，先看调试日志里的 `performance.sample_ms` 和 `performance.paint_ms`。
-- `show_hunter_esp` 控制猎人是否参与显示；关闭后稳定判定为猎人的屏幕 ESP 与雷达点都不绘制，但底层 PlayerArray 调试日志仍会记录猎人候选。猎人过滤使用 `filter_role`，不会直接吃瞬时 `role`。
+- 覆盖层分离三个刷新节奏：绘制约 90 FPS，目标快照采样约 90 FPS，窗口位置和尺寸约每 250ms 更新一次。高刷新使用 `Qt.PreciseTimer`，不要盲目继续拉高 timer；先看调试日志里的 `performance.sample_ms` 和 `performance.paint_ms`，若采样 p95 接近 11ms，应优先降低采样频率或减少读取开销。
+- `show_hunter_esp` 控制猎人是否参与显示；关闭后稳定判定为猎人的屏幕 ESP 与雷达点都不绘制，但底层 PlayerArray 调试日志仍会记录猎人候选。猎人过滤使用 `filter_role`，不会直接吃瞬时 `role`；颜色显示优先使用当前明确的 `role`，避免身份防抖期间猎人/躲藏者短暂沿用旧颜色。
 - `show_names` 和 `show_distance` 是两个独立开关，不再用一个“名称与距离”控件同时表达两件事；`show_edge_indicators` 独立控制屏幕外/背后目标边缘提示。
 - 名称标签优先读取 `APlayerState::CustomPlayerName`，按 FText/FString 都尝试；失败后再读 `APlayerState::PlayerNamePrivate` 的 FString，最后才回退为“玩家 短 ID”、`PlayerId` 或“目标 N”。短 ID 不再用 `#xxxxxx`，避免和颜色 Hex 格式混淆。`CustomPlayerName`、`PlayerNamePrivate`、`PlayerId` 都采用动态属性解析优先，失败时使用历史日志确认过的 `0x388`、`0x340`、`0x2AC` 兜底。PlayerState 显示名会短时缓存，只有开启数据记录时才写入完整 `name_candidates`。
 - 名称候选只允许中文、英文、数字和少量昵称符号；`BP_`、`MI_`、`Default__`、`Character`、`Material` 等蓝图/资源/对象标识会被过滤，避免覆盖层显示乱码或内部对象名。
 - `snap_lines` 控制普通 ESP 射线；`show_local_snap_line` 只控制本地玩家是否绘制自身 ESP 射线。
 - `show_local_snap_line` 依赖 `show_local` 与 `snap_lines`，两者任一关闭时自身射线开关置灰但保留用户选择。
 - 覆盖层默认只使用 PlayerArray，不再使用 Level Actor fallback 参与实际绘制，避免场景残留、尸体和旧实例混进覆盖层。`reader.iter_players()` 返回 `TargetSnapshot`，旧五元组迭代仍保留兼容。
-- 目标枚举采用极简策略：PlayerArray 里除本地玩家和死亡/观战 pawn 外全部进入绘制流程，不再用 Character 白名单或反向绑定延迟过滤。`SpectatePawn` 不再直接等价死亡：先检查 `SpectatePawn + 0x1A0` 是否指向真实 Character，且该 Character 的 `LastMyPlayerState` 或 `APawn::PlayerState` 匹配当前 PlayerState、`Dead=0`、坐标有效；命中时使用真实 Character 绘制并计入 `pa_linked`，否则才计入 `pa_dead`。
-- 类名用于角色和形态分类：`Hunter` 记为猎人，`Survivor` 记为躲藏者，`Spectate` 记为观战；形态从类名中的 `Cube`、`Base` 等 token 推断。感染、基础、双重模式都会让同一 PlayerState 在躲藏者、猎人、观战之间合法切换，因此不能把“曾经是躲藏者”当永久身份。
-- Reader 会维护 PlayerState 级别的短时身份状态，输出 `stable_role`、`filter_role` 和 `role_pending` 到 `TargetSnapshot` 与调试日志。`filter_role` 用于猎人 ESP 过滤和颜色选择，避免身份刚切换 1 秒内的瞬时抖动造成漏绘制；持续稳定后才按新身份处理。
+- 目标枚举采用极简策略：PlayerArray 里除本地玩家和死亡/观战 pawn 外全部进入绘制流程，不再用 Character 白名单或反向绑定延迟过滤。当前先优先保证躲藏方不漏绘制：`SpectatePawn` 不直接等价死亡，会检查 `SpectatePawn + 0x1A0` 是否指向真实 Character；只要该 Character 的 `LastMyPlayerState` 或 `APawn::PlayerState` 匹配当前 PlayerState、坐标有效，就使用真实 Character 绘制并计入 `pa_linked`。`Dead` 字段只写入日志，不再作为临时过滤条件。感染模式下，如果同一 PlayerState 已经从躲藏者切换为猎人，再遇到旧 `SpectatePawn` 链接的躲藏者 Character，会跳过并计入 `pa_suppressed`，避免击杀转猎人后继续显示旧躲藏模型。普通模式仍优先避免漏绘制，后续若要彻底解决死亡观战后旧模型显示，需要先找到稳定的普通模式指纹再拆分策略。
+- 玩法模式语义：普通模式开局有若干猎人寻找若干躲藏方，躲藏方被击杀后进入观战视角；感染模式开局有若干猎人寻找若干躲藏方，躲藏方被击杀后会变为猎人，出现猎人角色建模、视角切换为猎人、并操控猎人角色，身份只会从躲藏方切到猎人一次；双重模式房间内若干玩家先全部开始躲藏，随后这些玩家变为猎人开始寻找。后续做模式化过滤时，不能把这三类身份切换按同一死亡/观战规则处理。双重模式当前不做专门优化；如果用户关闭“猎人 ESP”，双重后半段全员变猎人时可能看起来像没有 ESP，这是配置和模式语义共同导致的结果。
+- 类名用于角色和形态分类：`Hunter` 记为猎人，`Survivor` 记为躲藏者，`Spectate` 记为观战；形态从类名中的 `Cube`、`Base` 等 token 推断。普通、感染、双重模式都会让同一 PlayerState 在躲藏者、猎人、观战之间合法切换，因此不能把“曾经是躲藏者”当永久身份。
+- Reader 会维护 PlayerState 级别的短时身份状态，输出 `stable_role`、`filter_role`、`role_pending`、`converted_to_hunter` 和 `converted_hunter_age` 到 `TargetSnapshot` 与调试日志。`filter_role` 用于猎人 ESP 过滤和颜色选择，避免身份刚切换 1 秒内的瞬时抖动造成漏绘制；持续稳定后才按新身份处理。`converted_to_hunter` 只表示同一 PlayerState 已观察到躲藏者到猎人的转换，用于感染模式抑制旧躲藏者链接，不代表永久阵营。
 - `APawn::PlayerState` 反向绑定异常只计入 `pa_suspect`，不再作为覆盖层跳过依据。躲猫猫玩法里静止属于正常状态，不能作为死亡依据。
 - Level Actor fallback 保留在 `reader.iter_players(players_only=False)` 里用于调试和对比，但覆盖层调用 `players_only=True`。
 - `APawn::PlayerState` 与 `APawn::Controller` 采用可选懒解析，解析失败时 fallback 宁可少画，也不把无绑定残留模型当作目标。
@@ -75,7 +76,7 @@
 - 屏幕 ESP 对 `behind_camera` / `outside_view*` 的目标不再直接丢弃；开启边缘提示时会把目标钳到屏幕边缘绘制一个边缘标记，避免“候选已读到但视觉上像漏绘制”。日志中的 `edge_reasons` 记录这些边缘绘制来源，若占比过高可在 ESP 页关闭“边缘提示”。
 - 菜单只允许通过标题栏拖动，避免用户调节控件时误拖窗口。
 - 控制项标题和说明使用紧凑两行布局，避免标题与说明之间出现松散空隙。
-- 调试页“数据记录”会每秒写入 `logs/runtime_debug_*.jsonl`，并提供“打开日志”按钮用于打开当前运行日志目录。日志用于分析候选目标、过滤统计、投影原因、名称候选、角色形态、边缘提示和最终绘制结果。日志包含 `performance`、`projection_reasons`、`edge_reasons`、`player_array_debug`、`level_actor_debug` 和 `emitted_targets`：先看采样/绘制耗时是否异常，再看目标是否进入 PlayerArray、是否被过滤、位置来源和投影失败原因。若出现“候选/绘制/雷达数量相同但游戏内感觉少人”，重点看 `dead_or_spectator`、`spectate_link`、`pa_linked`、`role/stable_role/filter_role` 是否解释了被过滤对象。
+- 调试页“数据记录”会每秒写入 `logs/runtime_debug_*.jsonl`，并提供“打开日志”按钮用于打开当前运行日志目录。日志用于分析候选目标、过滤统计、投影原因、名称候选、角色形态、边缘提示和最终绘制结果。日志包含 `performance`、`projection_reasons`、`edge_reasons`、`player_array_debug`、`level_actor_debug`、`emitted_targets` 和 `reader_context`：先看采样/绘制耗时是否异常，再看目标是否进入 PlayerArray、是否被过滤、位置来源和投影失败原因。`reader_context` 会记录 `GameState`、关卡和本地 Pawn 的类名/对象名，用于区分不同对局模式并决定是否需要模式化的 `SpectatePawn` 链接策略；`context_event` 会记录 world/GameState/Level 上下文变化，变化时 Reader 会清理跨局身份、名称、pawn 生命周期和位置缓存。`spectate_link` 会记录链接角色的类名、角色/形态、`LastMyPlayerState`、`APawn::PlayerState`、Controller、Dead、坐标来源、root 和 mesh，方便后续判断该显示还是该隐藏。诊断数据只在实际落盘的 1 秒采样帧构造，避免每个绘制帧重复组装完整 JSON；正常游玩时仍建议关闭“数据记录”。若出现“候选/绘制/雷达数量相同但游戏内感觉少人”，重点看 `dead_or_spectator`、`spectate_link`、`pa_linked`、`pa_suppressed`、`role/stable_role/filter_role` 是否解释了被过滤对象。
 - 名称定位优先看 `player_array_debug[].name_candidates`、`display_name_source` 和 `display_name_reader`。如果局内仍读不到昵称，先保留开启数据记录后的最新 JSONL 日志，再按日志补充专门的 `tools/` 诊断脚本。
 - 位置大跳变超过阈值时会记录到 `position_jumps` 并清理旧 pawn/目标位置缓存，用于识别回合重置、地图切换或目标实例重建。
 - `player_array_debug[].reason` 记录 `no_pawn`、`local_pawn`、`duplicate_pawn`、`dead_or_spectator` 等跳过原因；`emitted_targets[].position_source` 记录当前使用的坐标来源。后续定位“突然不绘制”时，先确认 `pa_dead` 是否异常增加，以及未绘制帧里的 `position_source`、`projection_reasons` 和 `edge_reasons` 是否异常。

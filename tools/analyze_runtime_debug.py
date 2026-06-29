@@ -78,6 +78,14 @@ def summarize(path):
     role_pairs = Counter()
     role_pending = Counter()
     forms = Counter()
+    contexts = Counter()
+    spectate_link_reasons = Counter()
+    spectate_link_classes = Counter()
+    spectate_link_position_sources = Counter()
+    spectate_link_dead_values = Counter()
+    spectate_link_bindings = Counter()
+    context_events = Counter()
+    converted_hunter_items = Counter()
     role_timeline = defaultdict(list)
     sample_ms = []
     paint_ms = []
@@ -88,6 +96,7 @@ def summarize(path):
     pa_linked_frames = 0
     pa_orphan_frames = 0
     pa_suspect_frames = 0
+    pa_suppressed_frames = 0
 
     for row in rows:
         stats = row.get("stats") or {}
@@ -102,6 +111,7 @@ def summarize(path):
             stats.get("pa_valid"),
             stats.get("pa_dead"),
             stats.get("pa_linked", 0),
+            stats.get("pa_suppressed", 0),
             stats.get("pa_orphan"),
             stats.get("pa_suspect"),
             stats.get("level_valid"),
@@ -116,6 +126,18 @@ def summarize(path):
             pa_orphan_frames += 1
         if stats.get("pa_suspect", 0):
             pa_suspect_frames += 1
+        if stats.get("pa_suppressed", 0):
+            pa_suppressed_frames += 1
+        context = row.get("reader_context") or {}
+        contexts[(
+            context.get("game_state_class") or "",
+            context.get("game_state_name") or "",
+            context.get("persistent_level_name") or "",
+            context.get("local_pawn_class") or "",
+        )] += 1
+        context_event = context.get("context_event") or {}
+        if context_event:
+            context_events[context_event.get("type") or "unknown"] += 1
 
         projection_reasons.update(row.get("projection_reasons") or {})
         row_edge_reasons = row.get("edge_reasons") or {}
@@ -139,6 +161,17 @@ def summarize(path):
                 target_reasons[target.get("reason") or "unknown"] += 1
         for item in row.get("player_array_debug") or []:
             pa_reasons[item.get("reason") or item.get("result") or "unknown"] += 1
+            link = item.get("spectate_link") or {}
+            if link:
+                spectate_link_reasons[link.get("reason") or "unknown"] += 1
+                spectate_link_classes[(link.get("class") or "", link.get("role") or "", link.get("form") or "")] += 1
+                spectate_link_position_sources[link.get("position_source") or "none"] += 1
+                spectate_link_dead_values[str(link.get("dead"))] += 1
+                spectate_link_bindings[(
+                    "actor_ps_match" if link.get("actor_player_state") == item.get("player_state") else "actor_ps_mismatch",
+                    "last_ps_match" if link.get("last_player_state") == item.get("player_state") else "last_ps_mismatch",
+                    "has_controller" if link.get("controller") and link.get("controller") != "0x0" else "no_controller",
+                )] += 1
             role = item.get("role") or "unknown"
             stable_role = item.get("stable_role") or role
             filter_role = item.get("filter_role") or role
@@ -148,6 +181,8 @@ def summarize(path):
             role_pairs[(role, stable_role, filter_role)] += 1
             if item.get("role_pending"):
                 role_pending[(role, stable_role, filter_role)] += 1
+            if item.get("converted_to_hunter"):
+                converted_hunter_items[(role, stable_role, filter_role, item.get("reason") or item.get("result") or "")] += 1
             forms[item.get("form") or "unknown"] += 1
             ps = item.get("player_state") or ""
             if ps and ps != "0x0" and item.get("reason") != "local_player_state":
@@ -183,6 +218,7 @@ def summarize(path):
 
     print(f"pa_dead 出现帧：{pa_dead_frames}")
     print(f"pa_linked 出现帧：{pa_linked_frames}")
+    print(f"pa_suppressed 出现帧：{pa_suppressed_frames}")
     print(f"pa_orphan 出现帧：{pa_orphan_frames}")
     print(f"pa_suspect 出现帧：{pa_suspect_frames}")
     print(f"边缘提示出现帧：{edge_frames}")
@@ -190,7 +226,7 @@ def summarize(path):
     print_metric("性能: 目标采样", sample_ms)
     print_metric("性能: 覆盖层绘制", paint_ms)
     print_counter("候选/绘制/雷达 Top", candidate_drawn, len(rows))
-    print_counter("统计 Top: pa_total, pa_valid, pa_dead, pa_linked, pa_orphan, pa_suspect, level_valid, level_orphan, rendered", stats_counter, len(rows))
+    print_counter("统计 Top: pa_total, pa_valid, pa_dead, pa_linked, pa_suppressed, pa_orphan, pa_suspect, level_valid, level_orphan, rendered", stats_counter, len(rows))
     print_counter("投影失败原因", projection_reasons or target_reasons)
     print_counter("边缘绘制原因", edge_reasons)
     print_counter("PlayerArray 跳过/候选原因", pa_reasons)
@@ -201,11 +237,19 @@ def summarize(path):
     print_counter("名称来源", display_sources)
     print_counter("名称候选结果: field, reader, result", name_candidate_results)
     print_counter("已接受名称", accepted_names)
+    print_counter("对局上下文 Top: GameStateClass, GameStateName, LevelName, LocalPawnClass", contexts)
+    print_counter("上下文变化事件", context_events)
+    print_counter("Spectate 链接原因", spectate_link_reasons)
+    print_counter("Spectate 链接类: Class, Role, Form", spectate_link_classes)
+    print_counter("Spectate 链接坐标来源", spectate_link_position_sources)
+    print_counter("Spectate 链接 Dead 值", spectate_link_dead_values)
+    print_counter("Spectate 链接绑定: ActorPS, LastPS, Controller", spectate_link_bindings)
     print_counter("角色分类", roles)
     print_counter("稳定角色分类", stable_roles)
     print_counter("过滤角色分类", filter_roles)
     print_counter("角色/稳定角色/过滤角色组合", role_pairs)
     print_counter("角色防抖中的组合", role_pending)
+    print_counter("已转猎人 PlayerState 项: Role, Stable, Filter, Reason", converted_hunter_items)
     print_counter("形态分类", forms)
 
     changing_players = {
@@ -230,6 +274,8 @@ def summarize(path):
         print("  pa_dead 没出现：死亡/观战类过滤暂时不是首要嫌疑。")
     if pa_linked_frames:
         print("  pa_linked 有出现：SpectatePawn 指向了真实 Character，覆盖层已改用该 Character 绘制。")
+    if pa_suppressed_frames:
+        print("  pa_suppressed 有出现：同一 PlayerState 已从躲藏者转为猎人，旧 Spectate 链接躲藏模型被抑制。")
     if sample_ms or paint_ms:
         print("  性能字段已记录：sample_ms 高说明内存采样压力大，paint_ms 高说明绘制压力大。")
     if projection_reasons or target_reasons:
@@ -242,10 +288,14 @@ def summarize(path):
         print("  有 PlayerArray 明细：重点看 dead_or_spectator/no_pawn/stale_orphan 是否在漏绘制时集中出现。")
     if role_pending:
         print("  角色防抖有触发：身份刚从躲藏者/猎人/观战切换时，会短暂沿用稳定角色参与过滤。")
+    if converted_hunter_items:
+        print("  已观察到 PlayerState 从躲藏者转为猎人：感染模式下旧躲藏模型抑制会依赖这个状态。")
     if name_candidate_results:
         print("  名称候选里 accepted 表示已读到可显示昵称；internal_prefix/internal_token 多半是资源名或蓝图名。")
     if position_jump_count:
         print("  位置大跳变已出现：通常意味着回合重置、地图切换或目标实例重建，相关缓存会被清理。")
+    if context_events:
+        print("  上下文变化已记录：world/GameState/Level 变化时会清理跨局身份和位置缓存。")
 
 
 def main():
