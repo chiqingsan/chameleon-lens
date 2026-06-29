@@ -411,21 +411,23 @@ class EspPreview(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(148, 163, 184, 34), 1.2))
-        painter.setBrush(QColor(13, 17, 23, 92))
-        painter.drawRoundedRect(QRectF(0.8, 0.8, self.width() - 1.6, self.height() - 1.6), 10, 10)
 
-        origin = QPointF(self.width() / 2, self.height() - 34)
+        painter.setPen(QPen(QColor("#f4f7fb")))
+        painter.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
+        painter.drawText(2, 20, "目标视图")
+
+        scene = QRectF(2, 36, self.width() - 4, 204)
+        origin = QPointF(scene.center().x(), scene.bottom() - 8)
         hunter = QColor(*self.config.hunter_color)
         survivor = QColor(*self.config.survivor_color)
         local = QColor(*self.config.local_color)
         dot_r = max(5, min(self.config.dot_radius, 16))
         targets = []
         if self.config.show_hunter_esp:
-            targets.append((QPointF(72, 76), hunter, "猎人", "18m", False))
-        targets.append((QPointF(176, 112), survivor, "躲藏者", "31m", False))
+            targets.append((QPointF(scene.left() + 46, scene.top() + 58), hunter, "猎人", "18m", False))
+        targets.append((QPointF(scene.right() - 70, scene.top() + 92), survivor, "躲藏者", "31m", False))
         if self.config.show_local:
-            targets.append((QPointF(126, 160), local, "自己", "0m", True))
+            targets.append((QPointF(scene.center().x() - 16, scene.top() + 144), local, "自己", "0m", True))
 
         if self.config.esp_enabled:
             for point, color, name, distance_text, is_local in targets:
@@ -453,20 +455,19 @@ class EspPreview(QWidget):
                     # 预览面板宽度固定，标签靠近右边缘时自动改到点位左侧，避免被裁切。
                     label_width = painter.fontMetrics().horizontalAdvance(label_text)
                     label_x = point.x() + dot_r + 8
-                    if label_x + label_width > self.width() - 14:
+                    if label_x + label_width > scene.right() - 6:
                         label_x = point.x() - dot_r - 8 - label_width
-                    label_x = max(14, label_x)
+                    label_x = max(scene.left() + 6, label_x)
                     painter.drawText(int(label_x), int(point.y() + 4), label_text)
 
-        painter.setPen(QPen(QColor("#f4f7fb")))
-        painter.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
-        painter.drawText(18, 28, "目标视图")
+        painter.setPen(QPen(QColor(148, 163, 184, 28), 1))
+        painter.drawLine(QPointF(scene.left() + 18, scene.bottom()), QPointF(scene.right() - 18, scene.bottom()))
         painter.setPen(QPen(QColor("#a5b1c2")))
         painter.setFont(QFont("Microsoft YaHei UI", 10))
         status = "ESP 绘制开" if self.config.esp_enabled else "ESP 绘制关"
         effective_local_ray = self.config.snap_lines and self.config.show_local and self.config.show_local_snap_line
         local_ray = "自身射线开" if effective_local_ray else "自身射线关"
-        painter.drawText(18, 264, f"{status} · {local_ray}")
+        painter.drawText(2, 266, f"{status} · {local_ray}")
 
 
 class RadarPreview(QWidget):
