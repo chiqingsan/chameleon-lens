@@ -1,4 +1,6 @@
 """主控制菜单。"""
+import os
+
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
@@ -267,6 +269,10 @@ class Menu(QWidget):
         retry_btn.setFixedSize(128, 36)
         retry_btn.clicked.connect(self._manual_retry)
         layout.addWidget(self._control_row("连接", "手动触发一次目标进程连接", retry_btn))
+        log_btn = SmoothButton("打开日志")
+        log_btn.setFixedSize(128, 36)
+        log_btn.clicked.connect(self._open_log_dir)
+        layout.addWidget(self._control_row("日志目录", "打开运行诊断文件夹", log_btn))
         layout.addStretch()
 
         body.addWidget(panel)
@@ -634,6 +640,10 @@ class Menu(QWidget):
     def _manual_retry(self):
         self.runtime.connect_once()
         self.refresh_status()
+
+    def _open_log_dir(self):
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        os.startfile(str(LOG_DIR))
 
     def _pick_enemy_color(self):
         dialog = ColorPickerDialog("默认目标", self.config.enemy_color, self)

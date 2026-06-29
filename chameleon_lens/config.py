@@ -5,12 +5,12 @@ from pathlib import Path
 from typing import Tuple
 
 from .hotkeys import normalize_hotkey
+from .paths import CONFIG_PATH
 
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 CONFIG_VERSION = 2
 UI_OPACITY_MIN = 70
 UI_OPACITY_MAX = 96

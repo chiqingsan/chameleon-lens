@@ -45,6 +45,15 @@
 .\.venv\Scripts\python.exe -m compileall -q esp.py chameleon_lens debug_life_state.py debug_teams.py bootstrap.py find_prop_offsets.py diag_fname.py
 ```
 
+涉及打包或启动脚本：
+
+```bat
+run.bat --check-only
+build_nuitka.bat
+```
+
+- Nuitka 打包版配置和日志应写入 `%LOCALAPPDATA%\Chameleon Lens`，不要写入 onefile 临时目录。
+
 涉及 UI 布局：
 
 - 重新生成 `docs/ui_actual_v5.png`。

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """项目启动器：检查 Python、维护 .venv、安装依赖并启动主程序。"""
 import argparse
+import hashlib
 import subprocess
 import sys
 import venv
@@ -11,6 +12,7 @@ ROOT = Path(__file__).resolve().parent
 VENV_DIR = ROOT / ".venv"
 VENV_PY = VENV_DIR / "Scripts" / "python.exe"
 REQUIREMENTS = ROOT / "requirements.txt"
+REQUIREMENTS_STAMP = VENV_DIR / ".requirements.stamp"
 APP_MODULE = "chameleon_lens"
 
 
@@ -37,8 +39,18 @@ def ensure_venv():
 
 
 def ensure_dependencies():
-    run([str(VENV_PY), "-m", "pip", "install", "--upgrade", "pip"], "正在更新 pip")
+    current_hash = _requirements_hash()
+    if REQUIREMENTS_STAMP.exists() and REQUIREMENTS_STAMP.read_text(encoding="utf-8").strip() == current_hash:
+        print("[Chameleon Lens] 依赖未变化，跳过安装检查。")
+        return
     run([str(VENV_PY), "-m", "pip", "install", "-r", str(REQUIREMENTS)], "正在检查并安装依赖")
+    REQUIREMENTS_STAMP.write_text(current_hash, encoding="utf-8")
+
+
+def _requirements_hash():
+    digest = hashlib.sha256()
+    digest.update(REQUIREMENTS.read_bytes())
+    return digest.hexdigest()
 
 
 def main():

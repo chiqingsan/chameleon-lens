@@ -6,8 +6,11 @@
 
 - `README.md`：用户侧项目说明。
 - `DEVELOPMENT.md`：当前二开约定和重要设计决策。
-- `bootstrap.py`：启动器，创建 `.venv`、安装依赖并通过 `python -m chameleon_lens` 启动。
-- `run.bat`：Windows 双击入口，转发到 `bootstrap.py`。
+- `VERSION`：应用版本号。
+- `bootstrap.py`：启动器，创建 `.venv`、按依赖哈希安装依赖并通过 `python -m chameleon_lens` 启动。
+- `run.bat`：Windows 双击入口，依赖未变化时直接快速启动，必要时转发到 `bootstrap.py`。
+- `build_nuitka.bat`：Nuitka 打包入口。
+- `assets/`：应用图标 SVG/ICO 和资产说明。
 - `esp.py`：兼容入口，旧脚本仍可 `from esp import MecchaESP`。
 - `requirements.txt`：运行依赖。
 - `config.json`：用户配置，运行时自动生成和保存。
@@ -35,6 +38,7 @@ python -m chameleon_lens
 - 设置 DPI 感知。
 - 使用 Windows 命名互斥体保证单例运行。
 - 创建 `QApplication`。
+- 设置应用图标。
 - 加载配置。
 - 创建 `ESPRuntime`、`Menu` 和 `Overlay`。
 - 管理自动重连定时器。
@@ -77,8 +81,19 @@ python -m chameleon_lens
 - `Config` dataclass。
 - `load_config()`。
 - `save_config()`。
-- 保持配置文件在项目根目录 `config.json`。
+- 通过 `chameleon_lens.paths.CONFIG_PATH` 决定配置文件位置。
 - 保存快捷键配置字段，启动时归一化为可识别按键名。
+
+### `chameleon_lens/paths.py`
+
+运行路径边界。
+
+负责：
+
+- 区分源码运行和 Nuitka 打包运行。
+- 源码运行时把配置和日志放在项目根目录。
+- 打包运行时把配置和日志放在 `%LOCALAPPDATA%\Chameleon Lens`。
+- 暴露应用图标资源路径。
 
 ### `chameleon_lens/hotkeys.py`
 
@@ -106,7 +121,7 @@ python -m chameleon_lens
 
 负责：
 
-- 创建 `logs/runtime_debug_*.jsonl`。
+- 在当前运行日志目录创建 `runtime_debug_*.jsonl`。
 - 限频写入覆盖层候选目标、过滤统计、相机、投影原因和最终绘制结果。
 
 ### `chameleon_lens/radar.py`
@@ -139,6 +154,7 @@ python -m chameleon_lens
 - 组装 `ESP / 雷达 / 外观 / 快捷键 / 调试` 页签。
 - 连接配置变更、预览刷新和自动保存。
 - 手动重试连接。
+- 打开当前日志目录。
 - 录入菜单显隐、覆盖层总开关、ESP 绘制和雷达面板快捷键。
 - 标题栏拖动。
 

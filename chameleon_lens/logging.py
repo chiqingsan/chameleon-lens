@@ -2,10 +2,8 @@
 import json
 import time
 from datetime import datetime
-from pathlib import Path
 
-
-LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
+from .paths import LOG_DIR
 
 
 class DebugDataRecorder:

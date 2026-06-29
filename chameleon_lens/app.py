@@ -4,9 +4,12 @@ import sys
 
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QTimer
+from PyQt5.QtGui import QIcon
 
 from .config import load_config, save_config
 from .hotkeys import hotkey_to_vk, normalize_hotkey
+from . import __version__
+from .paths import APP_ICON_PATH
 from .runtime import ESPRuntime
 from .ui.menu import Menu
 from .overlay import Overlay
@@ -45,6 +48,10 @@ def _acquire_single_instance():
 
 
 def main():
+    if "--version" in sys.argv:
+        print(__version__)
+        return 0
+
     mutex_handle, is_first_instance = _acquire_single_instance()
     if not is_first_instance:
         print("[Chameleon Lens] 已有实例正在运行。")
@@ -52,6 +59,8 @@ def main():
 
     _set_dpi_aware()
     app = QApplication(sys.argv)
+    if APP_ICON_PATH.exists():
+        app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
     config = load_config()
     app.aboutToQuit.connect(lambda: save_config(config))
     runtime = ESPRuntime()
