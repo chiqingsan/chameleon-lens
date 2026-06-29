@@ -565,10 +565,7 @@ class Menu(QWidget):
 
     def sync_controls_from_config(self):
         for attr, switch in self.switch_controls.items():
-            switch.blockSignals(True)
-            switch.setChecked(bool(getattr(self.config, attr)))
-            switch.blockSignals(False)
-            switch.update()
+            switch.sync_checked(bool(getattr(self.config, attr)))
         self._refresh_ray_dependencies()
         self._refresh_preview()
 
