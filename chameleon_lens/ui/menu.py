@@ -3,7 +3,7 @@ import os
 
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
+    QStackedWidget, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QColor
@@ -13,8 +13,9 @@ from ..hotkeys import hotkey_display, normalize_hotkey
 from ..logging import LOG_DIR
 from ..runtime import ESPRuntime
 from .widgets import (
-    AppearancePreview, ClickableSlider, CloseButton, ColorPickerDialog,
-    ColorSwatchButton, EspPreview, HotkeyButton, LogoBadge, MenuComboBox, RadarPreview,
+    AppearancePreview, ClickableSlider, CloseButton, ColorPickerDialog, CompactComboBox,
+    CompactNumberInput,
+    ColorSwatchButton, EspPreview, HotkeyButton, LogoBadge, RadarPreview,
     SmoothButton, SmoothFrame, StatusPill, TabButton, ToggleSwitch,
 )
 
@@ -86,15 +87,14 @@ class Menu(QWidget):
                 font-family: "Microsoft YaHei UI";
                 font-size: 13px;
             }
-            QSpinBox {
-                background-color: rgba(255, 255, 255, 12);
+            QLineEdit#compactNumberEdit {
+                background: transparent;
+                border: none;
                 color: #f4f7fb;
-                border: 2px solid rgba(148, 163, 184, 20);
-                border-radius: 8px;
-                padding: 5px 10px;
-                min-height: 30px;
                 font-family: "Microsoft YaHei UI";
-                font-size: 12px;
+                font-size: 11px;
+                font-weight: 600;
+                selection-background-color: rgba(94, 234, 212, 64);
             }
         """)
 
@@ -391,15 +391,10 @@ class Menu(QWidget):
         return frame
 
     def _spin_row(self, label, desc, attr, min_value, max_value, suffix):
-        spin = QSpinBox()
-        spin.setRange(min_value, max_value)
-        spin.setSuffix(f" {suffix}")
-        spin.setValue(int(getattr(self.config, attr)))
-        spin.setFixedWidth(78)
-        spin.setButtonSymbols(QSpinBox.NoButtons)
-        spin.valueChanged.connect(lambda value, a=attr: setattr(self.config, a, value))
-        spin.valueChanged.connect(lambda _value: self._after_value_changed(attr))
-        return self._control_row(label, desc, spin)
+        number_input = CompactNumberInput(getattr(self.config, attr), min_value, max_value, suffix)
+        number_input.valueChanged.connect(lambda value, a=attr: setattr(self.config, a, value))
+        number_input.valueChanged.connect(lambda _value: self._after_value_changed(attr))
+        return self._control_row(label, desc, number_input, height=44)
 
     def _hotkey_row(self, label, desc, attr):
         button = HotkeyButton(hotkey_display(getattr(self.config, attr)))
@@ -445,13 +440,12 @@ class Menu(QWidget):
         return frame
 
     def _combo_row(self, label, desc, attr, values):
-        combo = MenuComboBox()
+        combo = CompactComboBox()
         combo.addItems(values)
         combo.setCurrentText(getattr(self.config, attr))
         combo.currentTextChanged.connect(lambda text, a=attr: setattr(self.config, a, text))
         combo.currentTextChanged.connect(lambda _text: self._after_value_changed(attr))
-        combo.setFixedWidth(132)
-        return self._control_row(label, desc, combo)
+        return self._control_row(label, desc, combo, height=44)
 
     def _tab(self, text):
         return TabButton(text)

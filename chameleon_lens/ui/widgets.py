@@ -1,10 +1,10 @@
 """自绘 PyQt 控件、预览组件和颜色选择面板。"""
 from PyQt5.QtWidgets import (
-    QCheckBox, QDialog, QFrame, QGridLayout, QHBoxLayout,
-    QLabel, QPushButton, QSlider, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QSlider, QVBoxLayout, QWidget,
 )
-from PyQt5.QtCore import Qt, QPoint, QPointF, QRectF, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
-from PyQt5.QtGui import QPainter, QPen, QColor, QFont, QPixmap
+from PyQt5.QtCore import Qt, QEvent, QPointF, QRectF, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
+from PyQt5.QtGui import QIntValidator, QPainter, QPen, QColor, QFont, QPixmap
 
 from ..config import Config
 from ..paths import APP_ICON_PATH, APP_LOGO_PATH
@@ -145,14 +145,14 @@ class LogoBadge(QWidget):
         self.setAutoFillBackground(False)
         logo_path = APP_LOGO_PATH if APP_LOGO_PATH.exists() else APP_ICON_PATH
         self._pixmap = QPixmap(str(logo_path)) if logo_path.exists() else QPixmap()
-        self.setFixedSize(32, 32)
+        self.setFixedSize(24, 24)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         if not self._pixmap.isNull():
             painter.setRenderHint(QPainter.SmoothPixmapTransform)
-            painter.drawPixmap(QRectF(0, 0, 32, 32), self._pixmap, QRectF(self._pixmap.rect()))
+            painter.drawPixmap(QRectF(0, 0, 24, 24), self._pixmap, QRectF(self._pixmap.rect()))
             return
         painter.setPen(QPen(QColor(94, 234, 212, 70), 1.1))
         painter.setBrush(QColor(255, 255, 255, 10))
@@ -543,209 +543,156 @@ class ClickableSlider(QSlider):
         painter.drawEllipse(QPointF(handle_x, center_y), radius, radius)
 
 
-class MenuComboBox(QWidget):
-    currentTextChanged = pyqtSignal(str)
+class CompactNumberInput(QFrame):
+    valueChanged = pyqtSignal(int)
 
+    def __init__(self, value, min_value, max_value, suffix, parent=None):
+        super().__init__(parent)
+        self.min_value = int(min_value)
+        self.max_value = int(max_value)
+        self._value = int(value)
+        self.suffix = str(suffix)
+        self.setObjectName("compactNumberInput")
+        self.setCursor(Qt.IBeamCursor)
+        self.setFixedSize(78, 30)
+
+        self.edit = QLineEdit(str(self._value), self)
+        self.edit.setObjectName("compactNumberEdit")
+        self.edit.setValidator(QIntValidator(self.min_value, self.max_value, self))
+        self.edit.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.edit.setFrame(False)
+        self.edit.setGeometry(8, 3, self.width() - 32, 24)
+        self.edit.setVisible(False)
+        self.edit.editingFinished.connect(self._commit_text)
+        self.edit.installEventFilter(self)
+
+    def value(self):
+        return self._value
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.edit.setVisible(True)
+            self.edit.setFocus(Qt.MouseFocusReason)
+            self.edit.selectAll()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def setValue(self, value):
+        bounded = max(self.min_value, min(self.max_value, int(value)))
+        changed = bounded != self._value
+        self._value = bounded
+        self.edit.setText(str(bounded))
+        if changed:
+            self.valueChanged.emit(bounded)
+        self.update()
+
+    def _commit_text(self):
+        text = self.edit.text().strip()
+        if not text:
+            self.edit.setText(str(self._value))
+        else:
+            try:
+                self.setValue(int(text))
+            except ValueError:
+                self.edit.setText(str(self._value))
+        self.edit.setVisible(False)
+        self.update()
+
+    def eventFilter(self, obj, event):
+        if obj is self.edit and event.type() == QEvent.Wheel:
+            event.ignore()
+            return True
+        if obj is self.edit and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+            self.edit.setText(str(self._value))
+            self.edit.setVisible(False)
+            self.update()
+            return True
+        return super().eventFilter(obj, event)
+
+    def resizeEvent(self, event):
+        self.edit.setGeometry(8, 3, self.width() - 32, 24)
+        super().resizeEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        active = self.edit.hasFocus() or self.underMouse()
+        border = QColor(94, 234, 212, 92 if active else 36)
+        fill = QColor(255, 255, 255, 14 if active else 10)
+        painter.setPen(QPen(border, 1.1))
+        painter.setBrush(fill)
+        painter.drawRoundedRect(QRectF(0.6, 0.6, self.width() - 1.2, self.height() - 1.2), 7, 7)
+        painter.setFont(QFont("Microsoft YaHei UI", 8, QFont.DemiBold))
+        painter.setPen(QPen(QColor("#94a3b8")))
+        painter.drawText(QRectF(self.width() - 24, 0, 16, self.height()), Qt.AlignVCenter | Qt.AlignLeft, self.suffix)
+        if not self.edit.isVisible():
+            painter.setFont(QFont("Microsoft YaHei UI", 9, QFont.DemiBold))
+            painter.setPen(QPen(QColor("#f4f7fb")))
+            painter.drawText(QRectF(8, 0, self.width() - 34, self.height()), Qt.AlignVCenter | Qt.AlignRight, str(self._value))
+
+
+class CompactComboBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAttribute(Qt.WA_Hover, True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumHeight(34)
-        self._items = []
-        self._current_index = -1
-        self._popup = None
-
-    def addItems(self, values):
-        for value in values:
-            self._items.append(str(value))
-        if self._current_index < 0 and self._items:
-            self._current_index = 0
-        self.update()
-
-    def count(self):
-        return len(self._items)
-
-    def itemText(self, index):
-        if 0 <= index < len(self._items):
-            return self._items[index]
-        return ""
-
-    def currentIndex(self):
-        return self._current_index
-
-    def currentText(self):
-        return self.itemText(self._current_index)
-
-    def setCurrentIndex(self, index):
-        if not 0 <= index < len(self._items):
-            return
-        if index == self._current_index:
-            return
-        self._current_index = index
-        self.currentTextChanged.emit(self.currentText())
-        self.update()
-
-    def setCurrentText(self, text):
-        try:
-            index = self._items.index(str(text))
-        except ValueError:
-            return
-        self.setCurrentIndex(index)
-
-    def showPopup(self):
-        if self.count() <= 0:
-            return
-        if self._popup:
-            self._popup.close()
-        self._popup = _ComboPopup(self)
-        popup_size = self._popup.size()
-        pos = self.mapToGlobal(QPoint(0, self.height() + 4))
-        screen = self.screen()
-        if screen and pos.y() + popup_size.height() > screen.availableGeometry().bottom():
-            pos = self.mapToGlobal(QPoint(0, -popup_size.height() - 4))
-        self._popup.move(pos)
-        self._popup.show()
-        self._popup.setFocus(Qt.PopupFocusReason)
-        self.update()
-
-    def hidePopup(self):
-        if self._popup:
-            self._popup.close()
-            self._popup = None
-        self.update()
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
-            self.showPopup()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    def keyPressEvent(self, event):
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space, Qt.Key_Down):
-            self.showPopup()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-    def enterEvent(self, event):
-        self.update()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self.update()
-        super().leaveEvent(event)
+        self.setFixedSize(100, 30)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.view().setObjectName("compactComboPopup")
+        self.view().setMinimumWidth(100)
+        self.view().setSpacing(2)
+        self.setStyleSheet("""
+            QComboBox {
+                background-color: rgba(255, 255, 255, 10);
+                color: transparent;
+                border: 1px solid rgba(148, 163, 184, 36);
+                border-radius: 7px;
+                padding: 0 28px 0 10px;
+                font-family: "Microsoft YaHei UI";
+                font-size: 11px;
+                font-weight: 600;
+                selection-background-color: rgba(94, 234, 212, 42);
+            }
+            QComboBox:hover,
+            QComboBox:focus {
+                border-color: rgba(94, 234, 212, 92);
+                background-color: rgba(255, 255, 255, 14);
+            }
+            QComboBox::drop-down {
+                width: 24px;
+                border: none;
+                background: transparent;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                width: 0;
+                height: 0;
+            }
+            QAbstractItemView#compactComboPopup {
+                background-color: #0c121a;
+                color: #cbd5e1;
+                border: 1px solid rgba(94, 234, 212, 78);
+                border-radius: 7px;
+                padding: 4px;
+                outline: 0;
+                font-family: "Microsoft YaHei UI";
+                font-size: 11px;
+                selection-background-color: rgba(94, 234, 212, 40);
+                selection-color: #e6fffb;
+            }
+        """)
 
     def paintEvent(self, event):
+        super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        border = QColor(94, 234, 212, 90) if self.underMouse() else QColor(148, 163, 184, 34)
-        painter.setPen(QPen(border, 1.2))
-        painter.setBrush(QColor(255, 255, 255, 12))
-        painter.drawRoundedRect(QRectF(0.8, 0.8, self.width() - 1.6, self.height() - 1.6), 8, 8)
-
+        painter.setFont(QFont("Microsoft YaHei UI", 9, QFont.DemiBold))
         painter.setPen(QPen(QColor("#f4f7fb")))
-        painter.setFont(QFont("Microsoft YaHei UI", 12, QFont.DemiBold))
-        painter.drawText(QRectF(12, 0, self.width() - 42, self.height()), Qt.AlignVCenter | Qt.AlignLeft, self.currentText())
-
-        # QSS 在不同 Qt 后端下容易把下拉箭头渲成方块，这里手动绘制 chevron。
-        cx, cy = self.width() - 18, self.height() / 2 + 1
-        painter.setPen(QPen(QColor("#a5b1c2"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.drawText(QRectF(10, 0, self.width() - 36, self.height()), Qt.AlignVCenter | Qt.AlignLeft, self.currentText())
+        cx, cy = self.width() - 16, self.height() / 2 + 1
+        painter.setPen(QPen(QColor("#8fa1b4"), 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         painter.drawLine(QPointF(cx - 4, cy - 2), QPointF(cx, cy + 2))
         painter.drawLine(QPointF(cx, cy + 2), QPointF(cx + 4, cy - 2))
-
-
-class _ComboPopup(QWidget):
-    ROW_HEIGHT = 28
-    PAD = 6
-
-    def __init__(self, combo):
-        super().__init__(combo, Qt.Popup | Qt.FramelessWindowHint)
-        self.combo = combo
-        self.active_index = combo.currentIndex()
-        self.setFocusPolicy(Qt.StrongFocus)
-        self.setMouseTracking(True)
-        height = self.PAD * 2 + combo.count() * self.ROW_HEIGHT
-        self.setFixedSize(combo.width(), height)
-
-    def _index_at(self, pos):
-        index = int((pos.y() - self.PAD) // self.ROW_HEIGHT)
-        if 0 <= index < self.combo.count():
-            return index
-        return -1
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), QColor(12, 18, 26, 248))
-        outer = QRectF(0.8, 0.8, self.width() - 1.6, self.height() - 1.6)
-        painter.setPen(QPen(QColor(94, 234, 212, 92), 1.2))
-        painter.setBrush(QColor(12, 18, 26, 248))
-        painter.drawRoundedRect(outer, 8, 8)
-
-        for index in range(self.combo.count()):
-            row = QRectF(self.PAD, self.PAD + index * self.ROW_HEIGHT, self.width() - self.PAD * 2, self.ROW_HEIGHT - 2)
-            current = index == self.combo.currentIndex()
-            active = index == self.active_index
-            if current:
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor(94, 234, 212, 36))
-                painter.drawRoundedRect(row, 6, 6)
-                painter.setBrush(QColor("#5eead4"))
-                painter.drawRoundedRect(QRectF(row.left() + 6, row.top() + 7, 3, row.height() - 14), 1.5, 1.5)
-            elif active:
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor(255, 255, 255, 14))
-                painter.drawRoundedRect(row, 6, 6)
-
-            painter.setFont(QFont("Microsoft YaHei UI", 10, QFont.DemiBold if current else QFont.Medium))
-            painter.setPen(QPen(QColor("#e6fffb" if current else "#cbd5e1")))
-            painter.drawText(QRectF(row.left() + 14, row.top(), row.width() - 22, row.height()),
-                             Qt.AlignVCenter | Qt.AlignLeft, self.combo.itemText(index))
-
-    def mouseMoveEvent(self, event):
-        index = self._index_at(event.pos())
-        if index >= 0 and index != self.active_index:
-            self.active_index = index
-            self.update()
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            index = self._index_at(event.pos())
-            if index >= 0:
-                self.combo.setCurrentIndex(index)
-            self.close()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    def keyPressEvent(self, event):
-        if event.key() in (Qt.Key_Escape, Qt.Key_Tab):
-            self.close()
-            event.accept()
-            return
-        if event.key() in (Qt.Key_Up, Qt.Key_Down):
-            step = -1 if event.key() == Qt.Key_Up else 1
-            count = self.combo.count()
-            start = self.active_index if 0 <= self.active_index < count else self.combo.currentIndex()
-            self.active_index = (start + step) % count
-            self.update()
-            event.accept()
-            return
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
-            if 0 <= self.active_index < self.combo.count():
-                self.combo.setCurrentIndex(self.active_index)
-            self.close()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-    def closeEvent(self, event):
-        if self.combo._popup is self:
-            self.combo._popup = None
-            self.combo.update()
-        super().closeEvent(event)
 
 
 class EspPreview(QWidget):
