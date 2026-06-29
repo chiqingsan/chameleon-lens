@@ -3,15 +3,16 @@ from PyQt5.QtWidgets import (
     QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
 )
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QColor
 
 from ..config import Config, UI_OPACITY_MAX, UI_OPACITY_MIN, save_config
+from ..hotkeys import hotkey_display, normalize_hotkey
 from ..logging import LOG_DIR
 from ..runtime import ESPRuntime
 from .widgets import (
     AppearancePreview, ClickableSlider, CloseButton, ColorPickerDialog,
-    ColorSwatchButton, EspPreview, LogoBadge, MenuComboBox, RadarPreview,
+    ColorSwatchButton, EspPreview, HotkeyButton, LogoBadge, MenuComboBox, RadarPreview,
     SmoothButton, SmoothFrame, StatusPill, TabButton, ToggleSwitch,
 )
 
@@ -31,6 +32,8 @@ class Menu(QWidget):
         self.appearance_previews = []
         self.local_ray_switch = None
         self.slider_controls = {}
+        self.switch_controls = {}
+        self.hotkey_buttons = {}
         self._config_save_timer = QTimer(self)
         self._config_save_timer.setSingleShot(True)
         self._config_save_timer.setInterval(500)
@@ -55,6 +58,7 @@ class Menu(QWidget):
         self.stack.addWidget(self._build_esp_page())
         self.stack.addWidget(self._build_radar_page())
         self.stack.addWidget(self._build_appearance_page())
+        self.stack.addWidget(self._build_hotkey_page())
         self.stack.addWidget(self._build_debug_page())
         root.addWidget(self.stack, 1)
 
@@ -114,7 +118,7 @@ class Menu(QWidget):
     def _build_tabs(self):
         tabs = QHBoxLayout()
         tabs.setSpacing(8)
-        for index, name in enumerate(["ESP", "雷达", "外观", "调试"]):
+        for index, name in enumerate(["ESP", "雷达", "外观", "快捷键", "调试"]):
             btn = self._tab(name)
             btn.clicked.connect(lambda _checked=False, i=index: self._select_tab(i))
             self.tab_buttons.append(btn)
@@ -224,6 +228,27 @@ class Menu(QWidget):
         body.addWidget(self._appearance_preview_panel())
         return page
 
+    def _build_hotkey_page(self):
+        page = QWidget()
+        body = QHBoxLayout(page)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(24)
+
+        panel, layout = self._panel("快捷键", "为空时不启用对应快捷键", 548)
+        hotkeys = [
+            ("菜单显隐", "显示或隐藏设置面板", "hotkey_menu_toggle"),
+            ("覆盖层总开关", "开关整个透明覆盖层", "hotkey_overlay_toggle"),
+            ("ESP 绘制", "只切换屏幕 ESP 目标绘制", "hotkey_esp_toggle"),
+            ("雷达面板", "只切换角落雷达显示", "hotkey_radar_toggle"),
+        ]
+        for label, desc, attr in hotkeys:
+            layout.addWidget(self._hotkey_row(label, desc, attr))
+        layout.addStretch()
+
+        body.addWidget(panel)
+        body.addWidget(self._hotkey_info_panel())
+        return page
+
     def _build_debug_page(self):
         page = QWidget()
         body = QHBoxLayout(page)
@@ -277,8 +302,17 @@ class Menu(QWidget):
         layout.addWidget(self._info_row("进程", self.runtime.process_name))
         layout.addWidget(self._info_row("模块", self.runtime.module_name))
         layout.addWidget(self._info_row("重试", "每 2 秒自动连接"))
-        layout.addWidget(self._info_row("热键", "Insert / F1"))
+        layout.addWidget(self._info_row("热键", "在快捷键页配置"))
         layout.addWidget(self._info_row("日志", str(LOG_DIR)))
+        layout.addStretch()
+        return panel
+
+    def _hotkey_info_panel(self):
+        panel, layout = self._panel("录入说明", "点击按钮后按下按键", 280)
+        layout.addWidget(self._info_row("清空", "按 Backspace 或 Delete"))
+        layout.addWidget(self._info_row("取消", "按 Esc"))
+        layout.addWidget(self._info_row("支持", "F1-F12、字母、数字、方向键"))
+        layout.addWidget(self._info_row("默认", "菜单显隐 F1，其余为空"))
         layout.addStretch()
         return panel
 
@@ -316,6 +350,7 @@ class Menu(QWidget):
             self._schedule_config_save()
 
         switch.stateChanged.connect(on_changed)
+        self.switch_controls[attr] = switch
         return switch
 
     def _control_row(self, label, desc, control, height=48):
@@ -354,11 +389,29 @@ class Menu(QWidget):
         spin.setRange(min_value, max_value)
         spin.setSuffix(f" {suffix}")
         spin.setValue(int(getattr(self.config, attr)))
-        spin.setFixedWidth(96)
+        spin.setFixedWidth(78)
         spin.setButtonSymbols(QSpinBox.NoButtons)
         spin.valueChanged.connect(lambda value, a=attr: setattr(self.config, a, value))
         spin.valueChanged.connect(lambda _value: self._after_value_changed(attr))
         return self._control_row(label, desc, spin)
+
+    def _hotkey_row(self, label, desc, attr):
+        button = HotkeyButton(hotkey_display(getattr(self.config, attr)))
+        clear_btn = SmoothButton("清空")
+        clear_btn.setFixedSize(64, 34)
+        controls = QHBoxLayout()
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(8)
+        controls.addWidget(button)
+        controls.addWidget(clear_btn)
+        wrap = QWidget()
+        wrap.setLayout(controls)
+
+        button.capturingChanged.connect(lambda active, b=button: self._hotkey_capture_changed(b, active))
+        clear_btn.clicked.connect(lambda _checked=False, a=attr, b=button: self._set_hotkey(a, b, ""))
+        self.hotkey_buttons[attr] = button
+        button.installEventFilter(self)
+        return self._control_row(label, desc, wrap, height=58)
 
     def _slider_row(self, label, attr, min_value, max_value, suffix, compact=False):
         frame = QFrame()
@@ -445,6 +498,76 @@ class Menu(QWidget):
             self._apply_panel_style()
         self._refresh_preview()
         self._schedule_config_save()
+
+    def _hotkey_capture_changed(self, active_button, active):
+        if not active:
+            return
+        for button in self.hotkey_buttons.values():
+            if button is not active_button:
+                button.set_key(button.key())
+
+    def _set_hotkey(self, attr, button, value):
+        key = normalize_hotkey(value)
+        setattr(self.config, attr, key)
+        button.set_key(hotkey_display(key))
+        self._schedule_config_save()
+
+    def eventFilter(self, obj, event):
+        if isinstance(obj, HotkeyButton) and obj.is_capturing() and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Escape:
+                obj.set_key(obj.key())
+                return True
+            attr = None
+            for candidate_attr, button in self.hotkey_buttons.items():
+                if button is obj:
+                    attr = candidate_attr
+                    break
+            if not attr:
+                return True
+            if event.key() in (Qt.Key_Backspace, Qt.Key_Delete):
+                self._set_hotkey(attr, obj, "")
+                return True
+            key_name = self._qt_key_name(event.key())
+            if key_name:
+                self._set_hotkey(attr, obj, key_name)
+            return True
+        return super().eventFilter(obj, event)
+
+    def _qt_key_name(self, key):
+        if Qt.Key_F1 <= key <= Qt.Key_F12:
+            return f"F{key - Qt.Key_F1 + 1}"
+        if Qt.Key_A <= key <= Qt.Key_Z:
+            return chr(ord("A") + key - Qt.Key_A)
+        if Qt.Key_0 <= key <= Qt.Key_9:
+            return chr(ord("0") + key - Qt.Key_0)
+        named = {
+            Qt.Key_Space: "SPACE",
+            Qt.Key_Tab: "TAB",
+            Qt.Key_Return: "ENTER",
+            Qt.Key_Enter: "ENTER",
+            Qt.Key_Insert: "INSERT",
+            Qt.Key_Home: "HOME",
+            Qt.Key_End: "END",
+            Qt.Key_PageUp: "PAGEUP",
+            Qt.Key_PageDown: "PAGEDOWN",
+            Qt.Key_Up: "UP",
+            Qt.Key_Down: "DOWN",
+            Qt.Key_Left: "LEFT",
+            Qt.Key_Right: "RIGHT",
+        }
+        return named.get(key, "")
+
+    def sync_controls_from_config(self):
+        for attr, switch in self.switch_controls.items():
+            switch.blockSignals(True)
+            switch.setChecked(bool(getattr(self.config, attr)))
+            switch.blockSignals(False)
+            switch.update()
+        self._refresh_ray_dependencies()
+        self._refresh_preview()
+
+    def is_capturing_hotkey(self):
+        return any(button.is_capturing() for button in self.hotkey_buttons.values())
 
     def _set_slider_value(self, attr, value):
         control = self.slider_controls.get(attr)

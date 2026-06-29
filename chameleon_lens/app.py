@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QTimer
 
 from .config import load_config, save_config
+from .hotkeys import hotkey_to_vk, normalize_hotkey
 from .runtime import ESPRuntime
 from .ui.menu import Menu
 from .overlay import Overlay
@@ -69,16 +70,29 @@ def main():
     connect_timer.timeout.connect(retry_connect)
     connect_timer.start(2000)
 
-    # 全局轮询 Insert/F1，用于在游戏窗口上方快速显示或隐藏菜单。
-    VK_INSERT = 0x2D
-    VK_F1 = 0x70
-    _key_states = {"insert": False, "f1": False}
+    _key_states = {}
 
     def poll_keys():
-        for vk, name in [(VK_INSERT, "insert"), (VK_F1, "f1")]:
+        if menu.is_capturing_hotkey():
+            _key_states.clear()
+            return
+        actions = [
+            ("menu", config.hotkey_menu_toggle, lambda: menu.setVisible(not menu.isVisible())),
+            ("overlay", config.hotkey_overlay_toggle, lambda: setattr(config, "enabled", not config.enabled)),
+            ("esp", config.hotkey_esp_toggle, lambda: setattr(config, "esp_enabled", not config.esp_enabled)),
+            ("radar", config.hotkey_radar_toggle, lambda: setattr(config, "radar_enabled", not config.radar_enabled)),
+        ]
+        for name, key, action in actions:
+            key = normalize_hotkey(key)
+            vk = hotkey_to_vk(key)
+            if not vk:
+                _key_states.pop(name, None)
+                continue
             state = ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000
-            if state and not _key_states[name]:
-                menu.setVisible(not menu.isVisible())
+            if state and not _key_states.get(name, False):
+                action()
+                menu.sync_controls_from_config()
+                save_config(config)
             _key_states[name] = bool(state)
 
     key_timer = QTimer()

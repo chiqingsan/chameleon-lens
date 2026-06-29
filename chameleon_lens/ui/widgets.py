@@ -138,26 +138,28 @@ def _ease_mix(start, end, progress):
     return int(round(start + (end - start) * max(0.0, min(1.0, progress))))
 
 
-def _draw_hud_canvas(painter, scene, active=True):
+def _draw_hud_canvas(painter, scene, active=True, grid=True, scan=True):
     painter.save()
     grid_alpha = 18 if active else 9
     accent_alpha = 34 if active else 14
     painter.setBrush(Qt.NoBrush)
-    painter.setPen(QPen(QColor(148, 163, 184, grid_alpha), 1))
+    if grid:
+        painter.setPen(QPen(QColor(148, 163, 184, grid_alpha), 1))
 
-    x = scene.left() + 24
-    while x < scene.right() - 8:
-        painter.drawLine(QPointF(x, scene.top() + 10), QPointF(x, scene.bottom() - 10))
-        x += 24
+        x = scene.left() + 24
+        while x < scene.right() - 8:
+            painter.drawLine(QPointF(x, scene.top() + 10), QPointF(x, scene.bottom() - 10))
+            x += 24
 
-    y = scene.top() + 24
-    while y < scene.bottom() - 8:
-        painter.drawLine(QPointF(scene.left() + 10, y), QPointF(scene.right() - 10, y))
-        y += 24
+        y = scene.top() + 24
+        while y < scene.bottom() - 8:
+            painter.drawLine(QPointF(scene.left() + 10, y), QPointF(scene.right() - 10, y))
+            y += 24
 
-    painter.setPen(QPen(QColor(94, 234, 212, accent_alpha), 1))
-    scan_y = scene.top() + 58
-    painter.drawLine(QPointF(scene.left() + 12, scan_y), QPointF(scene.right() - 12, scan_y))
+    if scan:
+        painter.setPen(QPen(QColor(94, 234, 212, accent_alpha), 1))
+        scan_y = scene.top() + 58
+        painter.drawLine(QPointF(scene.left() + 12, scan_y), QPointF(scene.right() - 12, scan_y))
 
     corner_len = 20
     painter.setPen(QPen(QColor(94, 234, 212, accent_alpha + 10), 1.2))
@@ -169,6 +171,62 @@ def _draw_hud_canvas(painter, scene, active=True):
     ]:
         painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
     painter.restore()
+
+
+def _draw_target_view(painter, config: Config, width, footer_text):
+    painter.setPen(QPen(QColor("#f4f7fb")))
+    painter.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
+    painter.drawText(2, 20, "目标视图")
+
+    scene = QRectF(2, 36, width - 4, 204)
+    origin = QPointF(scene.center().x(), scene.bottom() - 8)
+    hunter = QColor(*config.hunter_color)
+    survivor = QColor(*config.survivor_color)
+    local = QColor(*config.local_color)
+    dot_r = max(5, min(config.dot_radius, 16))
+    targets = []
+    if config.show_hunter_esp:
+        targets.append((QPointF(scene.left() + 46, scene.top() + 58), hunter, "猎人", "18m", False))
+    targets.append((QPointF(scene.right() - 70, scene.top() + 92), survivor, "躲藏者", "31m", False))
+    if config.show_local:
+        targets.append((QPointF(scene.center().x() - 16, scene.top() + 144), local, "自己", "0m", True))
+
+    if config.esp_enabled:
+        for point, color, name, distance_text, is_local in targets:
+            draw_ray = config.snap_lines and (not is_local or config.show_local_snap_line)
+            if draw_ray:
+                painter.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 165), 1))
+                painter.drawLine(origin, point)
+
+            if config.box_esp:
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(color.red(), color.green(), color.blue(), 46))
+                painter.drawEllipse(point, dot_r + 7, dot_r + 7)
+                painter.setBrush(color)
+                painter.drawEllipse(point, dot_r, dot_r)
+
+            label_parts = []
+            if config.show_names:
+                label_parts.append(name)
+            if config.show_distance:
+                label_parts.append(distance_text)
+            if label_parts:
+                label_text = " · ".join(label_parts)
+                painter.setPen(QPen(QColor("#dbeafe")))
+                painter.setFont(QFont("Microsoft YaHei UI", 9, QFont.DemiBold))
+                # 预览面板宽度固定，标签靠近右边缘时自动改到点位左侧，避免被裁切。
+                label_width = painter.fontMetrics().horizontalAdvance(label_text)
+                label_x = point.x() + dot_r + 8
+                if label_x + label_width > scene.right() - 6:
+                    label_x = point.x() - dot_r - 8 - label_width
+                label_x = max(scene.left() + 6, label_x)
+                painter.drawText(int(label_x), int(point.y() + 4), label_text)
+
+    painter.setPen(QPen(QColor(148, 163, 184, 28), 1))
+    painter.drawLine(QPointF(scene.left() + 18, scene.bottom()), QPointF(scene.right() - 18, scene.bottom()))
+    painter.setPen(QPen(QColor("#a5b1c2")))
+    painter.setFont(QFont("Microsoft YaHei UI", 10))
+    painter.drawText(2, 266, footer_text)
 
 
 class AnimatedPaintButton(QPushButton):
@@ -262,6 +320,61 @@ class SmoothButton(AnimatedPaintButton):
         painter.setFont(QFont("Microsoft YaHei UI", 11, QFont.DemiBold))
         painter.setPen(QPen(text_color))
         painter.drawText(self.rect(), Qt.AlignCenter, self.text())
+
+
+class HotkeyButton(AnimatedPaintButton):
+    capturingChanged = pyqtSignal(bool)
+
+    def __init__(self, text="", parent=None):
+        super().__init__("", parent)
+        self._text = text
+        self._capturing = False
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFixedSize(112, 34)
+
+    def set_key(self, text):
+        self._text = text
+        self._capturing = False
+        self.capturingChanged.emit(False)
+        self.update()
+
+    def key(self):
+        return self._text
+
+    def is_capturing(self):
+        return self._capturing
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
+            self._capturing = True
+            self.setFocus(Qt.MouseFocusReason)
+            self.capturingChanged.emit(True)
+            self.update()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if not self._capturing:
+            super().keyPressEvent(event)
+            return
+        event.accept()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        hover = self.hoverProgress
+        active = self._capturing or self.hasFocus()
+        border_alpha = 112 if active else _ease_mix(30, 74, hover)
+        fill_alpha = 22 if active else _ease_mix(8, 15, hover)
+        painter.setPen(QPen(QColor(94, 234, 212, border_alpha), 1.2))
+        painter.setBrush(QColor(94, 234, 212, fill_alpha))
+        painter.drawRoundedRect(QRectF(0.8, 0.8, self.width() - 1.6, self.height() - 1.6), 8, 8)
+        painter.setFont(QFont("Microsoft YaHei UI", 10, QFont.DemiBold))
+        painter.setPen(QPen(QColor("#5eead4" if active else "#f4f7fb")))
+        label = "按下按键" if self._capturing else (self._text or "未设置")
+        painter.drawText(self.rect(), Qt.AlignCenter, label)
 
 
 class CloseButton(AnimatedPaintButton):
@@ -522,7 +635,6 @@ class _ComboPopup(QWidget):
         super().__init__(combo, Qt.Popup | Qt.FramelessWindowHint)
         self.combo = combo
         self.active_index = combo.currentIndex()
-        self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
         height = self.PAD * 2 + combo.count() * self.ROW_HEIGHT
@@ -537,6 +649,7 @@ class _ComboPopup(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor(12, 18, 26, 248))
         outer = QRectF(0.8, 0.8, self.width() - 1.6, self.height() - 1.6)
         painter.setPen(QPen(QColor(94, 234, 212, 92), 1.2))
         painter.setBrush(QColor(12, 18, 26, 248))
@@ -616,63 +729,10 @@ class EspPreview(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-
-        painter.setPen(QPen(QColor("#f4f7fb")))
-        painter.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
-        painter.drawText(2, 20, "目标视图")
-
-        scene = QRectF(2, 36, self.width() - 4, 204)
-        origin = QPointF(scene.center().x(), scene.bottom() - 8)
-        hunter = QColor(*self.config.hunter_color)
-        survivor = QColor(*self.config.survivor_color)
-        local = QColor(*self.config.local_color)
-        dot_r = max(5, min(self.config.dot_radius, 16))
-        targets = []
-        if self.config.show_hunter_esp:
-            targets.append((QPointF(scene.left() + 46, scene.top() + 58), hunter, "猎人", "18m", False))
-        targets.append((QPointF(scene.right() - 70, scene.top() + 92), survivor, "躲藏者", "31m", False))
-        if self.config.show_local:
-            targets.append((QPointF(scene.center().x() - 16, scene.top() + 144), local, "自己", "0m", True))
-
-        if self.config.esp_enabled:
-            for point, color, name, distance_text, is_local in targets:
-                draw_ray = self.config.snap_lines and (not is_local or self.config.show_local_snap_line)
-                if draw_ray:
-                    painter.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 165), 1))
-                    painter.drawLine(origin, point)
-
-                if self.config.box_esp:
-                    painter.setPen(Qt.NoPen)
-                    painter.setBrush(QColor(color.red(), color.green(), color.blue(), 46))
-                    painter.drawEllipse(point, dot_r + 7, dot_r + 7)
-                    painter.setBrush(color)
-                    painter.drawEllipse(point, dot_r, dot_r)
-
-                label_parts = []
-                if self.config.show_names:
-                    label_parts.append(name)
-                if self.config.show_distance:
-                    label_parts.append(distance_text)
-                if label_parts:
-                    label_text = " · ".join(label_parts)
-                    painter.setPen(QPen(QColor("#dbeafe")))
-                    painter.setFont(QFont("Microsoft YaHei UI", 9, QFont.DemiBold))
-                    # 预览面板宽度固定，标签靠近右边缘时自动改到点位左侧，避免被裁切。
-                    label_width = painter.fontMetrics().horizontalAdvance(label_text)
-                    label_x = point.x() + dot_r + 8
-                    if label_x + label_width > scene.right() - 6:
-                        label_x = point.x() - dot_r - 8 - label_width
-                    label_x = max(scene.left() + 6, label_x)
-                    painter.drawText(int(label_x), int(point.y() + 4), label_text)
-
-        painter.setPen(QPen(QColor(148, 163, 184, 28), 1))
-        painter.drawLine(QPointF(scene.left() + 18, scene.bottom()), QPointF(scene.right() - 18, scene.bottom()))
-        painter.setPen(QPen(QColor("#a5b1c2")))
-        painter.setFont(QFont("Microsoft YaHei UI", 10))
         status = "ESP 绘制开" if self.config.esp_enabled else "ESP 绘制关"
         effective_local_ray = self.config.snap_lines and self.config.show_local and self.config.show_local_snap_line
         local_ray = "自身射线开" if effective_local_ray else "自身射线关"
-        painter.drawText(2, 266, f"{status} · {local_ray}")
+        _draw_target_view(painter, self.config, self.width(), f"{status} · {local_ray}")
 
 
 class RadarPreview(QWidget):
@@ -693,12 +753,9 @@ class RadarPreview(QWidget):
         painter.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
         painter.drawText(2, 20, "雷达视图")
 
-        _draw_hud_canvas(painter, scene, enabled)
+        _draw_hud_canvas(painter, scene, enabled, grid=False, scan=False)
         hud_alpha = 58 if enabled else 22
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(QColor(148, 163, 184, 18), 1))
-        painter.drawLine(QPointF(scene.left() + 18, center.y()), QPointF(scene.right() - 18, center.y()))
-        painter.drawLine(QPointF(center.x(), scene.top() + 16), QPointF(center.x(), scene.bottom() - 16))
 
         painter.setPen(QPen(QColor(94, 234, 212, hud_alpha), 1))
         for scale in (0.38, 0.68, 1.0):
@@ -726,8 +783,6 @@ class RadarPreview(QWidget):
             painter.setBrush(QColor(color.red(), color.green(), color.blue(), point_alpha))
             painter.drawEllipse(point, size, size)
 
-        painter.setPen(QPen(QColor(148, 163, 184, 28), 1))
-        painter.drawLine(QPointF(scene.left() + 18, scene.bottom()), QPointF(scene.right() - 18, scene.bottom()))
         painter.setPen(QPen(QColor("#a5b1c2")))
         painter.setFont(QFont("Microsoft YaHei UI", 10))
         state = "开" if enabled else "关"
@@ -738,45 +793,17 @@ class AppearancePreview(QWidget):
     def __init__(self, config: Config, parent=None):
         super().__init__(parent)
         self.config = config
-        self.setFixedSize(252, 258)
+        self.setFixedSize(252, 286)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(148, 163, 184, 34), 1.2))
-        painter.setBrush(QColor(13, 17, 23, 92))
-        painter.drawRoundedRect(QRectF(0.8, 0.8, self.width() - 1.6, self.height() - 1.6), 10, 10)
-
-        center_x, center_y = 126, 118
-        painter.setPen(QPen(QColor(148, 163, 184, 38), 1))
-        painter.drawLine(center_x - 34, center_y, center_x + 34, center_y)
-        painter.drawLine(center_x, center_y - 34, center_x, center_y + 34)
-
-        # 外观页预览只展示颜色、圆点尺寸和连线效果，避免出现无意义说明块。
-        hunter = QColor(*self.config.hunter_color)
-        survivor = QColor(*self.config.survivor_color)
-        local = QColor(*self.config.local_color)
-        r = max(5, min(self.config.dot_radius, 18))
-        points = [(82, 76, hunter, r), (166, 126, local, max(7, r + 2)), (194, 174, survivor, max(4, r - 3))]
-        if self.config.snap_lines:
-            painter.setPen(QPen(QColor(hunter.red(), hunter.green(), hunter.blue(), 180), 1))
-            painter.drawLine(center_x, self.height() - 54, points[0][0], points[0][1])
-            painter.setPen(QPen(QColor(survivor.red(), survivor.green(), survivor.blue(), 180), 1))
-            painter.drawLine(center_x, self.height() - 54, points[2][0], points[2][1])
-        painter.setPen(Qt.NoPen)
-        for px, py, color, size in points:
-            painter.setBrush(QColor(color.red(), color.green(), color.blue(), 45))
-            painter.drawEllipse(QPointF(px, py), size + 8, size + 8)
-            painter.setBrush(color)
-            painter.drawEllipse(QPointF(px, py), size, size)
-
-        painter.setPen(QPen(QColor("#f4f7fb")))
-        painter.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
-        painter.drawText(18, 28, "覆盖层预览")
-        painter.setPen(QPen(QColor("#a5b1c2")))
-        painter.setFont(QFont("Microsoft YaHei UI", 10))
-        painter.drawText(18, 228, f"圆点 {self.config.dot_radius}px")
-        painter.drawText(118, 228, f"透明度 {self.config.ui_opacity}%")
+        _draw_target_view(
+            painter,
+            self.config,
+            self.width(),
+            f"圆点 {self.config.dot_radius}px · 透明度 {self.config.ui_opacity}%",
+        )
 
 
 class ColorSwatchButton(AnimatedPaintButton):

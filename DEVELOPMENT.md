@@ -30,6 +30,7 @@
 - `docs/ui_concept_v5.png`：第五版精简仪器面板 UI 渲染图，当前真实菜单按该方向落地，尺寸为 900 x 520。
 - `docs/ui_actual_v2.png`：真实 PyQt 菜单离屏渲染图，用于快速检查布局。
 - `docs/ui_actual_v5.png`：V5 真实 PyQt 菜单离屏渲染图，用于检查窗口尺寸和布局。
+- `docs/ui_hotkeys_tab.png`：快捷键页真实 PyQt 菜单离屏渲染图，用于检查快捷键录入布局。
 - `docs/ui_color_picker.png`：自定义深色颜色选择面板截图。
 - `tools/analyze_runtime_debug.py`：汇总 `logs/runtime_debug_*.jsonl`，用于快速判断漏绘制发生在死亡过滤、目标过滤、坐标读取还是投影阶段。
 - `debug_teams.py`、`diag_fname.py`、`find_prop_offsets.py`：调试和定位工具，暂未改动。
@@ -45,16 +46,17 @@
 - 应用入口通过 Windows 命名互斥体 `Global\ChameleonLensMecchaEsp` 做单例保护，重复启动会直接退出。
 - 运行依赖统一通过项目内 `.venv` 管理，用户入口优先使用 `启动 Chameleon Lens.bat`。
 - 配置持久化使用项目根目录 `config.json`。当前配置字段数量少、结构固定，JSON 比 SQLite 更轻，便于手动排查和迁移；保存采用临时文件替换，避免写入中断导致配置损坏。
-- UI 信息架构按 `ESP / 雷达 / 外观 / 调试` 四个顶部页签组织：ESP 页只放目标点、标签和射线控制，雷达页只放雷达与参数，外观页只放透明度、点半径和颜色。
+- UI 信息架构按 `ESP / 雷达 / 外观 / 快捷键 / 调试` 五个顶部页签组织：ESP 页只放目标点、标签和射线控制，雷达页只放雷达与参数，外观页只放透明度、点半径和颜色，快捷键页只放全局开关按键。
 - ESP 页使用两列开关布局和 ESP 效果预览；雷达预览只出现在雷达页，避免一个页签同时承载两个主题。
 - 运行状态放在标题栏右上角；标题栏只保留品牌、连接状态和窗口控制，不再显示透明度胶囊或副标题。
 - 连接状态使用自绘状态胶囊，标题栏只显示单行主状态：“未连接 · 等待进程”或“已连接 · 游戏进程”；详细错误和重试信息放在调试页。
 - 滑条使用可点击轨道控件并通过 `QPainter` 自绘，避免 QSS 滑条在圆角和 handle 上出现毛刺；开关需要让整个控件区域都可点击。下拉框的闭合态和弹层都由 `MenuComboBox` 自绘，避免系统列表选中态破坏深色菜单质感。
 - 开关使用 `QPropertyAnimation` 做短距离滑动动画，动画时间保持在 150ms 左右，避免影响工具响应感。
 - 主要容器、标题栏和内容面板使用 `SmoothFrame` 自绘，避免 QSS 的半透明圆角边框毛刺。
-- 顶部页签使用 `TabButton` 自绘，不再使用底部横条。Qt StyleSheet 的 `border + border-radius + 半透明背景` 在 Windows 上容易出现圆角毛刺，Logo、关闭按钮、关键按钮、调色板候选色、颜色预览和主要操作按钮优先用 `QPainter` 抗锯齿绘制。雷达预览使用开放 HUD 画布，用低透明网格、扫描线和角标填补空白，但不再增加内层卡片边框。
+- 顶部页签使用 `TabButton` 自绘，不再使用底部横条。Qt StyleSheet 的 `border + border-radius + 半透明背景` 在 Windows 上容易出现圆角毛刺，Logo、关闭按钮、关键按钮、调色板候选色、颜色预览和主要操作按钮优先用 `QPainter` 抗锯齿绘制。雷达预览使用开放 HUD 画布，仅保留角标、雷达环和目标点，不再额外绘制横竖底线、底部基线或内层卡片边框。
 - 自绘按钮、页签、关闭按钮和调色板候选色使用轻量 hover 过渡；滑条在 hover/拖动时改变轨道与滑块状态，提升可操作感但不做夸张动效。
 - `enabled` 是覆盖层总开关；`esp_enabled` 只控制屏幕 ESP 绘制，关闭后目标点、标签、射线和边缘提示都不画，但雷达仍由 `radar_enabled` 独立控制。
+- 全局快捷键由 `hotkey_menu_toggle`、`hotkey_overlay_toggle`、`hotkey_esp_toggle`、`hotkey_radar_toggle` 四个配置字段控制；菜单显隐默认 `F1`，其余默认为空。快捷键录入期间入口轮询会暂停，避免按下当前热键时误触发菜单隐藏或开关切换。
 - 覆盖层分离三个刷新节奏：绘制约 60 FPS，目标快照采样约 30 FPS，窗口位置和尺寸约每 250ms 更新一次。不要直接把绘制 timer 拉高来解决感知问题，先看调试日志里的 `performance.sample_ms` 和 `performance.paint_ms`。
 - `show_hunter_esp` 控制猎人是否参与显示；关闭后稳定判定为猎人的屏幕 ESP 与雷达点都不绘制，但底层 PlayerArray 调试日志仍会记录猎人候选。猎人过滤使用 `filter_role`，不会直接吃瞬时 `role`。
 - `show_names` 和 `show_distance` 是两个独立开关，不再用一个“名称与距离”控件同时表达两件事；`show_edge_indicators` 独立控制屏幕外/背后目标边缘提示。

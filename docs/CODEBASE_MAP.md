@@ -38,7 +38,7 @@ python -m chameleon_lens
 - 加载配置。
 - 创建 `ESPRuntime`、`Menu` 和 `Overlay`。
 - 管理自动重连定时器。
-- 管理 Insert / F1 菜单显示热键轮询。
+- 管理可配置全局快捷键轮询，默认 `F1` 控制菜单显隐。
 
 ### `chameleon_lens/memory.py`
 
@@ -78,6 +78,17 @@ python -m chameleon_lens
 - `load_config()`。
 - `save_config()`。
 - 保持配置文件在项目根目录 `config.json`。
+- 保存快捷键配置字段，启动时归一化为可识别按键名。
+
+### `chameleon_lens/hotkeys.py`
+
+全局快捷键名称映射。
+
+负责：
+
+- 归一化菜单录入的按键名称。
+- 把按键名称转换为 Windows VK 值。
+- 提供快捷键按钮显示文本。
 
 ### `chameleon_lens/runtime.py`
 
@@ -125,9 +136,10 @@ python -m chameleon_lens
 
 负责：
 
-- 组装 `ESP / 雷达 / 外观 / 调试` 页签。
+- 组装 `ESP / 雷达 / 外观 / 快捷键 / 调试` 页签。
 - 连接配置变更、预览刷新和自动保存。
 - 手动重试连接。
+- 录入菜单显隐、覆盖层总开关、ESP 绘制和雷达面板快捷键。
 - 标题栏拖动。
 
 ### `chameleon_lens/overlay.py`

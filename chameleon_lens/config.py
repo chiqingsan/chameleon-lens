@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Tuple
 
+from .hotkeys import normalize_hotkey
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -12,6 +14,12 @@ CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 CONFIG_VERSION = 2
 UI_OPACITY_MIN = 70
 UI_OPACITY_MAX = 96
+HOTKEY_FIELDS = (
+    "hotkey_menu_toggle",
+    "hotkey_overlay_toggle",
+    "hotkey_esp_toggle",
+    "hotkey_radar_toggle",
+)
 LEGACY_DEFAULT_COLORS = {
     "enemy_color": (255, 0, 0),
     "hunter_color": (255, 84, 84),
@@ -47,6 +55,11 @@ class Config:
     radar_size: int = 180
     radar_opacity: int = 68
     radar_position: str = "右上角"
+
+    hotkey_menu_toggle: str = "F1"
+    hotkey_overlay_toggle: str = ""
+    hotkey_esp_toggle: str = ""
+    hotkey_radar_toggle: str = ""
 
 
 def _coerce_color(value, default):
@@ -96,6 +109,8 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     if file_version < CONFIG_VERSION:
         _migrate_config(config, file_version)
     config.ui_opacity = max(UI_OPACITY_MIN, min(UI_OPACITY_MAX, int(config.ui_opacity)))
+    for attr in HOTKEY_FIELDS:
+        setattr(config, attr, normalize_hotkey(getattr(config, attr)))
     config.config_version = CONFIG_VERSION
     return config
 
