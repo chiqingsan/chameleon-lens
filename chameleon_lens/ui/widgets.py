@@ -33,13 +33,22 @@ class ToggleSwitch(QCheckBox):
 
     thumbPos = pyqtProperty(float, fget=get_thumb_pos, fset=set_thumb_pos)
 
-    def sync_checked(self, checked):
-        """外部配置同步时不触发业务信号，但要立即校准自绘滑块位置。"""
+    def sync_checked(self, checked, animate=True):
+        """外部配置同步时不触发业务信号，但保留开关滑块的视觉反馈。"""
+        checked = bool(checked)
+        target = 1.0 if checked else 0.0
+        if self.isChecked() == checked and abs(self._thumb_pos - target) < 0.001:
+            return
         self._anim.stop()
         was_blocked = self.blockSignals(True)
-        super().setChecked(bool(checked))
+        super().setChecked(checked)
         self.blockSignals(was_blocked)
-        self.set_thumb_pos(1.0 if checked else 0.0)
+        if animate:
+            self._anim.setStartValue(self._thumb_pos)
+            self._anim.setEndValue(target)
+            self._anim.start()
+        else:
+            self.set_thumb_pos(target)
 
     def _animate_thumb(self, state):
         self._anim.stop()
