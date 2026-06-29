@@ -140,18 +140,18 @@ class LogoBadge(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pixmap = QPixmap(str(APP_ICON_PATH)) if APP_ICON_PATH.exists() else QPixmap()
-        self.setFixedSize(32, 32)
+        self.setFixedSize(34, 34)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        if not self._pixmap.isNull():
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            painter.drawPixmap(QRectF(2, 2, 30, 30), self._pixmap, QRectF(self._pixmap.rect()))
+            return
         painter.setPen(QPen(QColor(94, 234, 212, 70), 1.1))
         painter.setBrush(QColor(255, 255, 255, 10))
         painter.drawRoundedRect(QRectF(0.8, 0.8, self.width() - 1.6, self.height() - 1.6), 8, 8)
-        if not self._pixmap.isNull():
-            painter.setRenderHint(QPainter.SmoothPixmapTransform)
-            painter.drawPixmap(QRectF(4, 4, 24, 24), self._pixmap, QRectF(self._pixmap.rect()))
-            return
         painter.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
         painter.setPen(QPen(QColor("#5eead4")))
         painter.drawText(self.rect(), Qt.AlignCenter, "CL")
