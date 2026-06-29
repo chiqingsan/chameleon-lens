@@ -182,4 +182,4 @@ python -m chameleon_lens
 ## 维护工具
 
 - `tools/analyze_runtime_debug.py`：汇总运行日志，辅助判断漏绘制、过滤和投影问题。
-- `tools/generate_app_icon.py`：从 SVG 生成 Windows ICO 图标。
+- `tools/generate_app_icon.py`：从 `assets/app.png` 处理并生成 Windows ICO 图标。

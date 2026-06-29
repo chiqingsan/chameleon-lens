@@ -1,10 +1,9 @@
 # 资产说明
 
-- `chameleon.svg`：应用图标源文件，来自 Wikimedia Commons 的 `File:Chameleon icon.svg`。
-- `chameleon.ico`：由 `tools/generate_app_icon.py` 从 SVG 生成，用于窗口图标和 Nuitka 打包。
+- `app.png`：应用图标源图，使用用户提供的参考图片。
+- `chameleon.ico`：由 `tools/generate_app_icon.py` 从源图裁切、透明化并生成，用于窗口图标、菜单 Logo 和 Nuitka 打包。
 
-## 图标来源
+## 设计说明
 
-- 来源：https://commons.wikimedia.org/wiki/File:Chameleon_icon.svg
-- 作者：Offnfopt
-- 许可：Public domain
+- 不直接把原始图片塞进 ICO；生成脚本会裁掉白边、处理白色背景透明度，并输出 16px 到 256px 的多尺寸 ICO。
+- 菜单左上角和应用窗口使用同一个 `chameleon.ico`，保证品牌标识一致。

@@ -4,9 +4,10 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QSlider, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import Qt, QPoint, QPointF, QRectF, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
-from PyQt5.QtGui import QPainter, QPen, QColor, QFont
+from PyQt5.QtGui import QPainter, QPen, QColor, QFont, QPixmap
 
 from ..config import Config
+from ..paths import APP_ICON_PATH
 
 
 # ---------------------------------------------------------------------------
@@ -138,14 +139,19 @@ class StatusPill(QWidget):
 class LogoBadge(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._pixmap = QPixmap(str(APP_ICON_PATH)) if APP_ICON_PATH.exists() else QPixmap()
         self.setFixedSize(32, 32)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(94, 234, 212, 84), 1.2))
-        painter.setBrush(QColor(94, 234, 212, 28))
+        painter.setPen(QPen(QColor(94, 234, 212, 70), 1.1))
+        painter.setBrush(QColor(255, 255, 255, 10))
         painter.drawRoundedRect(QRectF(0.8, 0.8, self.width() - 1.6, self.height() - 1.6), 8, 8)
+        if not self._pixmap.isNull():
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            painter.drawPixmap(QRectF(4, 4, 24, 24), self._pixmap, QRectF(self._pixmap.rect()))
+            return
         painter.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
         painter.setPen(QPen(QColor("#5eead4")))
         painter.drawText(self.rect(), Qt.AlignCenter, "CL")

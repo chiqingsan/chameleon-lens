@@ -20,14 +20,14 @@
 - `bootstrap.py`：启动器，负责创建 `.venv`、按 `requirements.txt` 哈希安装依赖，最终通过 `python -m chameleon_lens` 进入主程序。
 - `build_nuitka.bat`：Nuitka 打包脚本，输出 `dist\ChameleonLens.exe`，成功后清理 Nuitka 中间目录。
 - `chameleon_lens/_version.py`：应用版本号单一来源。
-- `assets/`：应用图标资源；`chameleon.svg` 来自 Wikimedia Commons，`chameleon.ico` 由工具脚本生成。
+- `assets/`：应用图标资源；`app.png` 是源图，`chameleon.ico` 由工具脚本裁切、透明化并生成。
 - `requirements.txt`：运行依赖清单，由启动脚本自动安装到 `.venv`。
 - `docs/ARCHITECTURE.md`：当前模块边界和依赖方向。
 - `docs/CODEBASE_MAP.md`：项目文件地图。
 - `docs/DEVELOPMENT_GUIDE.md`：修改、验证和文档同步规则。
 - `docs/UI_CONCEPT.md`：UI 概念方向和当前落地说明，仅保留文字记录。
 - `tools/analyze_runtime_debug.py`：汇总 `logs/runtime_debug_*.jsonl`，用于快速判断漏绘制发生在死亡过滤、目标过滤、坐标读取还是投影阶段。
-- `tools/generate_app_icon.py`：从 `assets/chameleon.svg` 生成 Windows `.ico` 图标。
+- `tools/generate_app_icon.py`：从 `assets/app.png` 生成 Windows `.ico` 图标。
 - `README.md`：面向使用者的中文说明。
 
 ## 运行时生成文件
