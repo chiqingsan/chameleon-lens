@@ -1,0 +1,1247 @@
+"""MECCHA CHAMELEON 外部读取器和世界到屏幕投影。"""
+import math
+import struct
+import time
+import unicodedata
+from dataclasses import dataclass
+
+import pymem
+
+from .memory import (
+    OFFSETS, FNameResolver, OffsetResolver, PatternScanner, UObjectArray,
+    dist, read_array, read_fstring, read_ftext, rfloat, rp, rvec3, ru32,
+)
+
+
+@dataclass(frozen=True)
+class TargetSnapshot:
+    """覆盖层消费的目标快照；保留迭代兼容旧的五元组调用。"""
+    is_local: bool
+    pos: tuple
+    idx: int
+    display_name: str = ""
+    player_id: int = 0
+    short_id: str = ""
+    player_state: int = 0
+    pawn: int = 0
+    class_name: str = ""
+    role: str = "unknown"
+    stable_role: str = "unknown"
+    filter_role: str = "unknown"
+    form: str = "unknown"
+    source: str = "unknown"
+    position_jump: bool = False
+
+    def __iter__(self):
+        yield self.is_local
+        yield self.pos
+        yield self.idx
+        yield self.display_name
+        yield self.player_id
+
+    def __len__(self):
+        return 5
+
+
+INTERNAL_NAME_PREFIXES = (
+    "bp_", "abp_", "wbp_", "mi_", "m_", "t_", "sk_", "sm_", "ns_", "dt_",
+    "da_", "default__", "skel_", "reinst_",
+)
+
+INTERNAL_NAME_TOKENS = (
+    "cleon", "c_leon", "firstperson", "character", "sculpture", "baloon",
+    "balloon", "material", "texture", "curve", "vector", "object", "script",
+    "component", "controller", "session", "pawn", "spectate", "linearcolor",
+    "gradient", "datatable", "rowhandle", "uint", "intvector",
+)
+
+FORM_NAME_MAP = {
+    "cube": "立方体",
+    "base": "基础",
+    "hunter": "猎人",
+    "survivor": "躲藏者",
+    "default": "默认",
+    "spectator": "观战",
+    "spectatepawn": "观战",
+}
+
+
+def _normalize_display_name(name):
+    if not name:
+        return "", "empty"
+    name = unicodedata.normalize("NFKC", str(name)).strip().strip("\x00").strip()
+    if not name:
+        return "", "empty"
+    if len(name) > 32:
+        return "", "too_long"
+    if any(sep in name for sep in ("/", "\\", ":", "\r", "\n", "\t")):
+        return "", "bad_separator"
+
+    lower = name.lower()
+    if lower in ("none", "null", "player", "name", "unknown"):
+        return "", "placeholder"
+    if lower.startswith(INTERNAL_NAME_PREFIXES):
+        return "", "internal_prefix"
+    if any(token in lower for token in INTERNAL_NAME_TOKENS):
+        return "", "internal_token"
+
+    allowed_symbols = set(" _-[]().#")
+    meaningful = 0
+    for ch in name:
+        code = ord(ch)
+        if ch in allowed_symbols:
+            continue
+        if "0" <= ch <= "9" or "A" <= ch <= "Z" or "a" <= ch <= "z":
+            meaningful += 1
+            continue
+        if "\u4e00" <= ch <= "\u9fff":
+            meaningful += 1
+            continue
+        category = unicodedata.category(ch)
+        if category.startswith("C") or category.startswith("M"):
+            return "", "bad_unicode"
+        # 非 ASCII 拉丁扩展经常来自错误解码的 FString，先保守过滤。
+        return "", "unsupported_char"
+    if meaningful <= 0:
+        return "", "no_meaningful_char"
+    return name, ""
+
+
+def _looks_like_display_name(name):
+    return bool(_normalize_display_name(name)[0])
+
+
+# ---------------------------------------------------------------------------
+# Game reader
+# ---------------------------------------------------------------------------
+class MecchaESP:
+    PROCESS_NAME = "PenguinHotel-Win64-Shipping.exe"
+    MODULE_NAME = "PenguinHotel-Win64-Shipping.exe"
+
+    GUOBJECT_SIG = bytes([
+        0x48, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00,
+        0x48, 0x89, 0x01, 0x45, 0x8B, 0xD1
+    ])
+    GUOBJECT_MASK = bytes([1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1])
+
+    # Multiple FNamePool references can appear; we verify by trying to read names.
+    FNAMEPOOL_PATTERNS = (
+        # lea rcx,[FNamePool]; call FName::FName; mov r8,rax
+        (bytes([0x48, 0x8D, 0x0D, 0x00, 0x00, 0x00, 0x00,
+                0xE8, 0x00, 0x00, 0x00, 0x00,
+                0x4C, 0x8B, 0xC0]),
+         bytes([1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1])),
+        # lea rcx,[FNamePool]; call FName::FName; mov rax,[rbx+...]
+        (bytes([0x48, 0x8D, 0x0D, 0x00, 0x00, 0x00, 0x00,
+                0xE8, 0x00, 0x00, 0x00, 0x00,
+                0x48, 0x8B]),
+         bytes([1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1])),
+        # lea rsi,[FNamePool]
+        (bytes([0x48, 0x8D, 0x35, 0x00, 0x00, 0x00, 0x00]),
+         bytes([1, 1, 1, 0, 0, 0, 0])),
+        # lea rdi,[FNamePool]
+        (bytes([0x48, 0x8D, 0x3D, 0x00, 0x00, 0x00, 0x00]),
+         bytes([1, 1, 1, 0, 0, 0, 0])),
+    )
+    FNAMEPOOL_DELTA = 0xE3B40
+    STALE_PAWN_SECONDS = 1.5
+    POSITION_JUMP_UNITS = 30000.0
+    ROLE_SWITCH_GRACE_SECONDS = 1.2
+    PLAYER_TRACKER_TTL_SECONDS = 20.0
+    SPECTATE_LINKED_CHARACTER_OFFSET = 0x1A0
+    PLAYERSTATE_FALLBACK_OFFSETS = {
+        "CustomPlayerName": 0x388,
+        "PlayerNamePrivate": 0x340,
+        "PlayerId": 0x2AC,
+    }
+
+    OFFSET_MAP = {
+        "UWorld::GameState": ("World", "GameState"),
+        "UWorld::OwningGameInstance": ("World", "OwningGameInstance"),
+        "UGameInstance::LocalPlayers": ("GameInstance", "LocalPlayers"),
+        "UPlayer::PlayerController": ("Player", "PlayerController"),
+        "UEngine::GameViewport": ("Engine", "GameViewport"),
+        "UGameViewportClient::World": ("GameViewportClient", "World"),
+        "AGameStateBase::PlayerArray": ("GameStateBase", "PlayerArray"),
+        "APlayerState::PawnPrivate": ("PlayerState", "PawnPrivate"),
+        "AController::PlayerState": ("Controller", "PlayerState"),
+        "AController::ControlRotation": ("Controller", "ControlRotation"),
+        "APlayerController::AcknowledgedPawn": ("PlayerController", "AcknowledgedPawn"),
+        "APlayerController::PlayerCameraManager": ("PlayerController", "PlayerCameraManager"),
+        "APlayerCameraManager::CameraCachePrivate": ("PlayerCameraManager", "CameraCachePrivate"),
+        "AActor::RootComponent": ("Actor", "RootComponent"),
+        "USceneComponent::RelativeLocation": ("SceneComponent", "RelativeLocation"),
+        # Note: UWorld::PersistentLevel and ULevel::Actors are only used in the
+        # level-actors fallback; they are resolved lazily with hardcoded defaults.
+    }
+
+    def __init__(self):
+        self.pm = pymem.Pymem(self.PROCESS_NAME)
+        self.guobject_array = self._scan_guobject_array()
+        if not self.guobject_array:
+            raise RuntimeError("Could not find GUObjectArray via pattern scan")
+        self.fname_pool = self._scan_fname_pool()
+        if not self.fname_pool:
+            raise RuntimeError("Could not find FNamePool via pattern scan or delta fallback")
+        self.objects = UObjectArray(self.pm, self.guobject_array, self.fname_pool)
+        # Sanity-check globals; on failure we still open, but warn in overlay.
+        self._globals_ok = self._verify_globals()
+        self.resolver = OffsetResolver(self.pm, self.objects)
+        self.offsets = self.resolver.resolve_map(self.OFFSET_MAP)
+        self.offsets["APlayerState::CustomPlayerName"] = (
+            self.resolver.resolve("PlayerState", "CustomPlayerName")
+            or self.PLAYERSTATE_FALLBACK_OFFSETS["CustomPlayerName"]
+        )
+        self.offsets["APlayerState::PlayerNamePrivate"] = (
+            self.resolver.resolve("PlayerState", "PlayerNamePrivate")
+            or self.PLAYERSTATE_FALLBACK_OFFSETS["PlayerNamePrivate"]
+        )
+        self.offsets["APlayerState::PlayerId"] = (
+            self.resolver.resolve("PlayerState", "PlayerId")
+            or self.PLAYERSTATE_FALLBACK_OFFSETS["PlayerId"]
+        )
+        # Fill in the stable nested struct offsets from the bootstrap dict.
+        for key in ("FCameraCacheEntry::POV", "FMinimalViewInfo::Location",
+                    "FMinimalViewInfo::Rotation", "FMinimalViewInfo::FOV"):
+            self.offsets[key] = OFFSETS[key]
+        self.gengine = self.objects.find_first_instance("GameEngine")
+        if not self.gengine:
+            raise RuntimeError("Could not find GEngine instance")
+        self._pawn_life_tracker = {}
+        self._last_iter_stats = {}
+        self._last_iter_context = {}
+        self._last_playerarray_debug = []
+        self._last_level_debug = []
+        self._last_emit_debug = []
+        self._target_position_cache = {}
+        self._last_position_jumps = []
+        self._player_state_tracker = {}
+
+    def _scan_guobject_array(self):
+        scanner = PatternScanner(self.pm, self.MODULE_NAME)
+        addr = scanner.scan(self.GUOBJECT_SIG, self.GUOBJECT_MASK)
+        if not addr:
+            return 0
+        rel = struct.unpack("<i", self.pm.read_bytes(addr + 3, 4))[0]
+        return addr + 7 + rel
+
+    def _scan_fname_pool(self):
+        # The delta has been stable for this build; use it as the default.
+        delta_candidate = self.guobject_array - self.FNAMEPOOL_DELTA
+        if self._verify_fname_pool(delta_candidate):
+            return delta_candidate
+        # Try a few common FNamePool signatures as backups.
+        scanner = PatternScanner(self.pm, self.MODULE_NAME)
+        for sig, mask in self.FNAMEPOOL_PATTERNS:
+            for addr in scanner.scan_all(sig, mask):
+                rel = struct.unpack("<i", self.pm.read_bytes(addr + 3, 4))[0]
+                candidate = addr + 7 + rel
+                if self._verify_fname_pool(candidate):
+                    return candidate
+        # Even if unverified, fall back to the delta so the ESP can still open.
+        # Name resolution may self-correct via the resolver's lazy offset probe.
+        return delta_candidate
+
+    def _verify_fname_pool(self, pool_addr):
+        resolver = FNameResolver(self.pm, pool_addr)
+        if resolver.resolve(0) == "None":
+            return True
+        # Some builds don't keep "None" at id 0; settle for any printable name.
+        for probe in (0, 1, 2, 3, 4, 5):
+            name = resolver.resolve(probe)
+            if name and 0 < len(name) <= 128 and name.isprintable():
+                return True
+        return False
+
+    def _verify_globals(self):
+        # GUObjectArray + 0x10 is TUObjectArray::Objects; read its header.
+        obj_array = self.guobject_array + 0x10
+        num = ru32(self.pm, obj_array + 0x14)
+        max_chunks = ru32(self.pm, obj_array + 0x18)
+        if num == 0 or num > 10_000_000 or max_chunks == 0 or max_chunks > 64:
+            return False
+        # We should be able to find the meta Class object.
+        return self.objects.find_class("Class") != 0
+
+    def _get_world(self):
+        viewport = rp(self.pm, self.gengine + self.offsets["UEngine::GameViewport"])
+        if not viewport:
+            return 0
+        return rp(self.pm, viewport + self.offsets["UGameViewportClient::World"])
+
+    def _get_local_controller(self, world):
+        if not world:
+            return 0
+        gi = rp(self.pm, world + self.offsets["UWorld::OwningGameInstance"])
+        if not gi:
+            return 0
+        lp_data, lp_count, _ = read_array(self.pm, gi + self.offsets["UGameInstance::LocalPlayers"])
+        if not lp_data or lp_count == 0:
+            return 0
+        local_player = rp(self.pm, lp_data)
+        if not local_player:
+            return 0
+        return rp(self.pm, local_player + self.offsets["UPlayer::PlayerController"])
+
+    def _read_pov(self, pov_addr):
+        """Read a minimal view POV from the given address."""
+        return {
+            "loc": rvec3(self.pm, pov_addr + self.offsets["FMinimalViewInfo::Location"]),
+            "rot": rvec3(self.pm, pov_addr + self.offsets["FMinimalViewInfo::Rotation"]),
+            "fov": rfloat(self.pm, pov_addr + self.offsets["FMinimalViewInfo::FOV"]),
+        }
+
+    def get_camera(self):
+        world = self._get_world()
+        if not world:
+            return None
+        pc = self._get_local_controller(world)
+        if not pc:
+            return None
+        cam = rp(self.pm, pc + self.offsets["APlayerController::PlayerCameraManager"])
+        if not cam:
+            return None
+
+        # Primary: CameraCachePrivate (always reflects the current camera).
+        cc = cam + self.offsets["APlayerCameraManager::CameraCachePrivate"]
+        pov = cc + self.offsets["FCameraCacheEntry::POV"]
+        try:
+            camera = self._read_pov(pov)
+        except Exception:
+            camera = None
+
+        # Fallback: PlayerCameraManager->ViewTarget.POV (some spectate/free-look modes).
+        if (camera is None or
+            (abs(camera["loc"][0]) < 0.01 and abs(camera["loc"][1]) < 0.01 and abs(camera["loc"][2]) < 0.01) or
+            camera["fov"] <= 0.0):
+            vt_off = self.offsets.get("APlayerCameraManager::ViewTarget")
+            vt_pov_off = self.offsets.get("FTViewTarget::POV")
+            if vt_off is not None and vt_pov_off is not None:
+                try:
+                    fallback = self._read_pov(cam + vt_off + vt_pov_off)
+                    if fallback["fov"] > 0.0:
+                        camera = fallback
+                except Exception:
+                    pass
+
+        if camera is None or camera["fov"] <= 0.0:
+            return None
+        return camera
+
+    def _class_name(self, obj):
+        if not obj:
+            return ""
+        cls = rp(self.pm, obj + OFFSETS["UObjectBase::ClassPrivate"])
+        return self.objects._obj_name(cls) if cls else ""
+
+    def _pawn_controller(self, pawn):
+        if not pawn:
+            return 0
+        off = self.offsets.get("APawn::Controller")
+        if off is None:
+            off = self.resolver.resolve("Pawn", "Controller") or 0
+            self.offsets["APawn::Controller"] = off
+        return rp(self.pm, pawn + off)
+
+    def _pawn_playerstate(self, pawn):
+        if not pawn:
+            return 0
+        off = self.offsets.get("APawn::PlayerState")
+        if off is None:
+            off = self.resolver.resolve("Pawn", "PlayerState") or 0
+            self.offsets["APawn::PlayerState"] = off
+        return rp(self.pm, pawn + off)
+
+    def _resolve_object_property_offset(self, obj, prop_name, fallback=0):
+        """按对象实际类链解析属性偏移；蓝图子类字段不会出现在基础 PlayerState 上。"""
+        if not obj:
+            return fallback
+        cache_key = f"ObjectProperty::{self._class_name(obj)}::{prop_name}"
+        if cache_key in self.offsets:
+            return self.offsets[cache_key]
+        cls = rp(self.pm, obj + OFFSETS["UObjectBase::ClassPrivate"])
+        seen = set()
+        while cls and cls not in seen:
+            seen.add(cls)
+            try:
+                offset = self.resolver._resolve_on_class(cls, prop_name)
+            except Exception:
+                offset = None
+            if offset is not None:
+                self.offsets[cache_key] = offset
+                return offset
+            cls = rp(self.pm, cls + OFFSETS["UStruct::SuperStruct"])
+        self.offsets[cache_key] = fallback
+        return fallback
+
+    def _read_name_candidate(self, player_state, prop_name, offset, readers):
+        out = {
+            "field": prop_name,
+            "offset": offset,
+            "raw": "",
+            "source": "",
+            "accepted": False,
+            "reason": "missing_offset",
+        }
+        if not player_state or not offset:
+            return out
+        first_rejected = None
+        for reader_name, reader in readers:
+            try:
+                raw = reader(self.pm, player_state + offset)
+            except Exception:
+                raw = ""
+            name, reason = _normalize_display_name(raw)
+            if name:
+                out["raw"] = raw
+                out["name"] = name
+                out["source"] = reader_name
+                out["accepted"] = True
+                out["reason"] = ""
+                return out
+            if raw:
+                first_rejected = first_rejected or {
+                    "raw": raw,
+                    "source": reader_name,
+                    "reason": reason or "rejected",
+                }
+        if first_rejected:
+            out.update(first_rejected)
+        else:
+            out["reason"] = "empty"
+        return out
+
+    def _player_name_candidates(self, player_state):
+        if not player_state:
+            return []
+        custom_off = self._resolve_object_property_offset(
+            player_state,
+            "CustomPlayerName",
+            self.offsets.get("APlayerState::CustomPlayerName", 0),
+        )
+        private_off = self._resolve_object_property_offset(
+            player_state,
+            "PlayerNamePrivate",
+            self.offsets.get("APlayerState::PlayerNamePrivate", 0),
+        )
+        # CustomPlayerName 在历史日志里最像真实昵称字段；它可能是 FString，也可能是 FText。
+        return [
+            self._read_name_candidate(
+                player_state,
+                "CustomPlayerName",
+                custom_off,
+                (("FText", read_ftext), ("FString", read_fstring)),
+            ),
+            self._read_name_candidate(
+                player_state,
+                "PlayerNamePrivate",
+                private_off,
+                (("FString", read_fstring),),
+            ),
+        ]
+
+    def _player_display_name_info(self, player_state):
+        for candidate in self._player_name_candidates(player_state):
+            if candidate.get("accepted"):
+                return {
+                    "name": candidate.get("name", ""),
+                    "source": candidate.get("field", ""),
+                    "reader": candidate.get("source", ""),
+                    "candidates": self._debug_name_candidates(player_state),
+                }
+        return {
+            "name": "",
+            "source": "",
+            "reader": "",
+            "candidates": self._debug_name_candidates(player_state),
+        }
+
+    def _debug_name_candidates(self, player_state):
+        """记录候选名称的过滤结果；只用于日志，不直接显示到覆盖层。"""
+        candidates = []
+        for item in self._player_name_candidates(player_state):
+            raw = item.get("raw") or ""
+            candidates.append({
+                "field": item.get("field", ""),
+                "offset": item.get("offset", 0),
+                "source": item.get("source", ""),
+                "raw": raw[:48],
+                "accepted": bool(item.get("accepted")),
+                "reason": item.get("reason", ""),
+            })
+        return candidates
+
+    def _player_display_name(self, player_state):
+        if not player_state:
+            return ""
+        return self._player_display_name_info(player_state)["name"]
+
+    def _player_id(self, player_state):
+        """读取 APlayerState::PlayerId，作为比 PlayerArray idx 更稳定的短 ID。"""
+        if not player_state:
+            return 0
+        off = self.offsets.get("APlayerState::PlayerId", 0)
+        if not off:
+            return 0
+        player_id = ru32(self.pm, player_state + off)
+        if player_id <= 0 or player_id > 1_000_000:
+            return 0
+        return player_id
+
+    def _player_display_label(self, player_state):
+        name = self._player_display_name(player_state)
+        if name:
+            return name
+        player_id = self._player_id(player_state)
+        return f"ID {player_id}" if player_id else ""
+
+    def _player_debug_identity(self, player_state):
+        """整理 PlayerState 身份信息；本地玩家即使不绘制也要进调试日志。"""
+        player_id = self._player_id(player_state)
+        name_info = self._player_display_name_info(player_state)
+        return {
+            "player_id": player_id,
+            "short_id": self._short_pointer_id(player_state),
+            "display_name": name_info.get("name", ""),
+            "display_name_source": name_info.get("source", ""),
+            "display_name_reader": name_info.get("reader", ""),
+            "name_candidates": name_info.get("candidates", []),
+        }
+
+    def _actor_owner(self, actor):
+        if not actor:
+            return 0
+        off = self.offsets.get("AActor::Owner")
+        if off is None:
+            return 0
+        return rp(self.pm, actor + off)
+
+    def _component_world_pos(self, component):
+        """Read a USceneComponent's world translation from ComponentToWorld."""
+        if not component:
+            return None
+        ctw_off = self.offsets.get("USceneComponent::ComponentToWorld")
+        trans_off = self.offsets.get("FTransform::Translation")
+        if ctw_off is None or trans_off is None:
+            return None
+        try:
+            return rvec3(self.pm, component + ctw_off + trans_off)
+        except Exception:
+            return None
+
+    def _actor_position_info(self, actor):
+        """返回 Actor 坐标和来源，方便定位漏绘制时到底读到了哪一种位置。"""
+        info = {
+            "position": None,
+            "source": "missing_actor",
+            "root": 0,
+            "mesh": 0,
+        }
+
+        if not actor:
+            return info
+        root = rp(self.pm, actor + self.offsets["AActor::RootComponent"])
+        info["root"] = root
+        if root:
+            rel_off = self.offsets.get("USceneComponent::RelativeLocation")
+            if rel_off is not None:
+                try:
+                    pos = rvec3(self.pm, root + rel_off)
+                    # Only fall through to ComponentToWorld if RelativeLocation
+                    # is clearly uninitialized (origin-only).
+                    if not (abs(pos[0]) < 0.01 and abs(pos[1]) < 0.01 and abs(pos[2]) < 0.01):
+                        info["position"] = pos
+                        info["source"] = "root_relative_location"
+                        return info
+                except Exception:
+                    pass
+            # Fallback: world-space transform.
+            pos = self._component_world_pos(root)
+            if pos is not None:
+                info["position"] = pos
+                info["source"] = "root_component_to_world"
+                return info
+        # Last resort: mesh world transform.
+        mesh_off = self.offsets.get("ACharacter::Mesh")
+        if mesh_off is not None:
+            mesh = rp(self.pm, actor + mesh_off)
+            info["mesh"] = mesh
+            if mesh:
+                pos = self._component_world_pos(mesh)
+                if pos is not None:
+                    info["position"] = pos
+                    info["source"] = "mesh_component_to_world"
+                    return info
+        info["source"] = "missing_position"
+        return info
+
+    def _actor_position(self, actor):
+        """Return the best available world position for an actor."""
+        return self._actor_position_info(actor)["position"]
+
+    @staticmethod
+    def _debug_hex(value):
+        return f"0x{int(value):X}" if value else "0x0"
+
+    @staticmethod
+    def _short_pointer_id(*values):
+        for value in values:
+            if value:
+                return f"{int(value) & 0xFFFFFF:06X}"
+        return ""
+
+    @staticmethod
+    def _debug_pos(pos):
+        if pos is None:
+            return None
+        return [round(float(v), 3) for v in pos]
+
+    @staticmethod
+    def _is_origin_position(pos):
+        return pos is not None and abs(pos[0]) < 0.01 and abs(pos[1]) < 0.01 and abs(pos[2]) < 0.01
+
+    def _class_role_info(self, cls_name):
+        lower = (cls_name or "").lower()
+        if "spectate" in lower:
+            role = "spectator"
+        elif "hunter" in lower:
+            role = "hunter"
+        elif "survivor" in lower:
+            role = "survivor"
+        elif "character" in lower:
+            role = "character"
+        else:
+            role = "unknown"
+
+        form = "unknown"
+        for token, label in FORM_NAME_MAP.items():
+            if token in lower:
+                form = label
+        if role == "survivor":
+            # 形态通常藏在类名末尾，例如 Default_Cube_1point7。
+            for token in ("cube", "base"):
+                if token in lower:
+                    form = FORM_NAME_MAP[token]
+                    break
+        elif role in ("hunter", "spectator"):
+            form = FORM_NAME_MAP.get(role, role)
+
+        return role, form
+
+    def _update_player_state_tracker(self, player_state, role, form, cls_name, pawn, pos, now):
+        """跟踪同一 PlayerState 的身份切换，给 UI 过滤提供短时防抖依据。"""
+        role = role or "unknown"
+        key = int(player_state or 0)
+        if not key:
+            return {
+                "stable_role": role,
+                "filter_role": role,
+                "role_age": 0.0,
+                "role_pending": False,
+                "role_previous": "",
+            }
+
+        item = self._player_state_tracker.setdefault(key, {
+            "current_role": role,
+            "stable_role": role,
+            "role_since": now,
+            "last_seen": now,
+            "last_non_spectator_role": "",
+            "last_non_spectator_pawn": 0,
+            "last_non_spectator_pos": None,
+        })
+        item["last_seen"] = now
+
+        if item.get("current_role") != role:
+            item["previous_role"] = item.get("current_role", "")
+            item["current_role"] = role
+            item["role_since"] = now
+
+        role_age = max(0.0, now - item.get("role_since", now))
+        if role_age >= self.ROLE_SWITCH_GRACE_SECONDS:
+            item["stable_role"] = role
+
+        if role not in ("spectator", "unknown"):
+            item["last_non_spectator_role"] = role
+            if pawn:
+                item["last_non_spectator_pawn"] = pawn
+            if pos is not None:
+                item["last_non_spectator_pos"] = pos
+
+        stable_role = item.get("stable_role") or role
+        role_pending = role != stable_role and role_age < self.ROLE_SWITCH_GRACE_SECONDS
+        filter_role = stable_role if role_pending else role
+        return {
+            "stable_role": stable_role,
+            "filter_role": filter_role,
+            "role_age": round(float(role_age), 3),
+            "role_pending": bool(role_pending),
+            "role_previous": item.get("previous_role", ""),
+            "last_non_spectator_role": item.get("last_non_spectator_role", ""),
+            "last_non_spectator_pawn": self._debug_hex(item.get("last_non_spectator_pawn", 0)),
+            "last_non_spectator_pos": self._debug_pos(item.get("last_non_spectator_pos")),
+        }
+
+    def _cleanup_player_state_tracker(self, active_player_states, now):
+        stale = [
+            key for key, item in self._player_state_tracker.items()
+            if key not in active_player_states and now - item.get("last_seen", now) > self.PLAYER_TRACKER_TTL_SECONDS
+        ]
+        for key in stale:
+            del self._player_state_tracker[key]
+
+    def _read_object_property_u8(self, obj, prop_name):
+        off = self._resolve_object_property_offset(obj, prop_name, 0)
+        if not off:
+            return None
+        try:
+            return ru32(self.pm, obj + off) & 0xFF
+        except Exception:
+            return None
+
+    def _read_object_property_ptr(self, obj, prop_name):
+        off = self._resolve_object_property_offset(obj, prop_name, 0)
+        if not off:
+            return 0
+        try:
+            return rp(self.pm, obj + off)
+        except Exception:
+            return 0
+
+    def _spectate_linked_character_info(self, spectate_pawn, player_state):
+        """SpectatePawn 可能只是观战壳；若它指向真实角色，就用真实角色绘制。"""
+        info = {"actor": 0, "reason": "no_linked_actor"}
+        if not spectate_pawn:
+            return info
+        try:
+            linked = rp(self.pm, spectate_pawn + self.SPECTATE_LINKED_CHARACTER_OFFSET)
+        except Exception:
+            info["reason"] = "read_failed"
+            return info
+
+        info["actor"] = linked
+        info["offset"] = self.SPECTATE_LINKED_CHARACTER_OFFSET
+        info["actor_hex"] = self._debug_hex(linked)
+        if not linked or linked == spectate_pawn:
+            info["reason"] = "empty_or_self"
+            return info
+
+        cls_name = self._class_name(linked)
+        info["class"] = cls_name
+        if not cls_name or "Character" not in cls_name or "Spectate" in cls_name:
+            info["reason"] = "not_character"
+            return info
+
+        last_ps = self._read_object_property_ptr(linked, "LastMyPlayerState")
+        actor_ps = self._pawn_playerstate(linked)
+        info["last_player_state"] = self._debug_hex(last_ps)
+        info["actor_player_state"] = self._debug_hex(actor_ps)
+        if player_state and last_ps != player_state and actor_ps != player_state:
+            info["reason"] = "player_state_mismatch"
+            return info
+
+        dead = self._read_object_property_u8(linked, "Dead")
+        info["dead"] = dead
+        if dead:
+            info["reason"] = "linked_dead"
+            return info
+
+        pos = self._actor_position(linked)
+        info["position"] = self._debug_pos(pos)
+        if pos is None or self._is_origin_position(pos):
+            info["reason"] = "invalid_position"
+            return info
+
+        info["reason"] = "linked_character"
+        return info
+
+    def _track_position_jump(self, key, pos, now):
+        """用位置大跳变识别回合/地图切换，并清理依赖旧位置的缓存。"""
+        if not key or pos is None:
+            return False, 0.0
+        previous = self._target_position_cache.get(key)
+        self._target_position_cache[key] = (pos, now)
+        if not previous:
+            return False, 0.0
+        distance = dist(previous[0], pos)
+        if distance < self.POSITION_JUMP_UNITS:
+            return False, distance
+
+        self._pawn_life_tracker.clear()
+        self._player_state_tracker.clear()
+        self._last_position_jumps.append({
+            "key": key,
+            "distance": round(float(distance), 3),
+            "from": self._debug_pos(previous[0]),
+            "to": self._debug_pos(pos),
+        })
+        self._last_position_jumps = self._last_position_jumps[-24:]
+        return True, distance
+
+    def _cleanup_target_position_cache(self, active_keys, now):
+        stale = [
+            key for key, (_, seen_at) in self._target_position_cache.items()
+            if key not in active_keys and now - seen_at > 10.0
+        ]
+        for key in stale:
+            del self._target_position_cache[key]
+
+    def _should_skip_stale_playerarray_pawn(self, player_state, pawn, pos, now):
+        """延迟判定 PlayerArray 里的旧 pawn，避免开局字段暂不同步导致漏绘制。"""
+        reverse_off = self.offsets.get("APawn::PlayerState", 0)
+        if not reverse_off:
+            return False
+
+        reverse_ps = self._pawn_playerstate(pawn)
+        item = self._pawn_life_tracker.setdefault(pawn, {
+            "first_seen": now,
+            "last_seen": now,
+            "seen_bound": False,
+            "invalid_since": None,
+        })
+        item["last_seen"] = now
+
+        if reverse_ps == player_state:
+            item["seen_bound"] = True
+            item["invalid_since"] = None
+            return False
+
+        if item["invalid_since"] is None:
+            item["invalid_since"] = now
+
+        invalid_seconds = now - item["invalid_since"]
+
+        # 躲猫猫类游戏里“静止不动”是正常玩法，不能作为死亡依据。
+        # 这里只在同一个 pawn 曾经绑定正常、随后反向 PlayerState 断开并持续一段时间后跳过。
+        if item["seen_bound"] and invalid_seconds >= self.STALE_PAWN_SECONDS:
+            return True
+
+        return False
+
+    def _cleanup_pawn_life_tracker(self, seen_pawns, now):
+        stale = [
+            pawn for pawn, item in self._pawn_life_tracker.items()
+            if pawn not in seen_pawns and now - item.get("last_seen", now) > 10.0
+        ]
+        for pawn in stale:
+            del self._pawn_life_tracker[pawn]
+
+    def iter_players(self, include_local=False, players_only=False):
+        now = time.monotonic()
+        world = self._get_world()
+        if not world:
+            self._last_iter_stats = {"pa_total": 0, "pa_valid": 0, "pa_dead": 0,
+                                     "pa_orphan": 0, "pa_suspect": 0,
+                                     "pa_linked": 0,
+                                     "level_total": 0, "level_valid": 0,
+                                     "level_orphan": 0,
+                                     "rendered": 0}
+            self._last_iter_context = {"world": "0x0"}
+            self._last_playerarray_debug = []
+            self._last_level_debug = []
+            self._last_emit_debug = []
+            self._last_position_jumps = []
+            return
+        gamestate = rp(self.pm, world + self.offsets["UWorld::GameState"])
+        pc = self._get_local_controller(world)
+        local_pawn = rp(self.pm, pc + self.offsets["APlayerController::AcknowledgedPawn"]) if pc else 0
+        local_ps = rp(self.pm, pc + self.offsets["AController::PlayerState"]) if pc else 0
+
+        stats = {"pa_total": 0, "pa_valid": 0, "pa_dead": 0, "pa_orphan": 0, "pa_suspect": 0,
+                 "pa_linked": 0,
+                 "level_total": 0, "level_valid": 0,
+                 "level_orphan": 0,
+                 "rendered": 0}
+        seen = set()
+        seen_life_pawns = set()
+        active_position_keys = set()
+        active_player_states = set()
+        playerarray_debug = []
+        level_debug = []
+        emit_debug = []
+        self._last_position_jumps = []
+        self._last_iter_context = {
+            "world": self._debug_hex(world),
+            "game_state": self._debug_hex(gamestate),
+            "local_controller": self._debug_hex(pc),
+            "local_player_state": self._debug_hex(local_ps),
+            "local_pawn": self._debug_hex(local_pawn),
+        }
+        self._last_playerarray_debug = playerarray_debug
+        self._last_level_debug = level_debug
+        self._last_emit_debug = emit_debug
+
+        def _is_dead_or_spectator_class(cls_name):
+            # 极简目标策略：PlayerArray 里除观战/死亡 pawn 外全部绘制。
+            # 不再用 Character 白名单或反向绑定延迟过滤，避免把特殊形态误判成非目标。
+            return bool(cls_name) and "Spectate" in cls_name
+
+        def _emit_actor(actor, idx, stat_key, display_name="", source="unknown", player_state=0, role_state=None):
+            pos_info = self._actor_position_info(actor)
+            pos = pos_info["position"]
+            name_info = self._player_display_name_info(player_state)
+            cls_name = self._class_name(actor)
+            role, form = self._class_role_info(cls_name)
+            if role_state is None:
+                role_state = self._update_player_state_tracker(player_state, role, form, cls_name, actor, pos, now)
+            short_id = self._short_pointer_id(player_state, actor)
+            jump_key = self._debug_hex(player_state or actor)
+            active_position_keys.add(jump_key)
+            jumped, jump_distance = self._track_position_jump(jump_key, pos, now)
+            item = {
+                "source": source,
+                "idx": idx,
+                "actor": self._debug_hex(actor),
+                "player_state": self._debug_hex(player_state),
+                "player_id": self._player_id(player_state),
+                "short_id": short_id,
+                "display_name": display_name,
+                "display_name_source": name_info.get("source", ""),
+                "display_name_reader": name_info.get("reader", ""),
+                "name_candidates": name_info.get("candidates", []),
+                "class": cls_name,
+                "role": role,
+                "stable_role": role_state.get("stable_role", role),
+                "filter_role": role_state.get("filter_role", role),
+                "role_age": role_state.get("role_age", 0.0),
+                "role_pending": role_state.get("role_pending", False),
+                "role_previous": role_state.get("role_previous", ""),
+                "form": form,
+                "position": self._debug_pos(pos),
+                "position_source": pos_info["source"],
+                "position_jump": jumped,
+                "position_jump_distance": round(float(jump_distance), 3),
+            }
+            if pos is None:
+                item["result"] = "skip"
+                item["reason"] = "no_position"
+                emit_debug.append(item)
+                return
+            # Drop uninitialized / origin-only positions.
+            if self._is_origin_position(pos):
+                item["result"] = "skip"
+                item["reason"] = "origin_position"
+                emit_debug.append(item)
+                return
+            stats[stat_key] += 1
+            stats["rendered"] += 1
+            item["result"] = "emit"
+            item["stat_key"] = stat_key
+            emit_debug.append(item)
+            yield TargetSnapshot(
+                is_local=False,
+                pos=pos,
+                idx=idx,
+                display_name=display_name,
+                player_id=item["player_id"],
+                short_id=short_id,
+                player_state=player_state,
+                pawn=actor,
+                class_name=cls_name,
+                role=role,
+                stable_role=role_state.get("stable_role", role),
+                filter_role=role_state.get("filter_role", role),
+                form=form,
+                source=source,
+                position_jump=jumped,
+            )
+
+        # Local marker for calibration.
+        if include_local and local_pawn:
+            pos = self._actor_position(local_pawn)
+            if pos is not None:
+                stats["rendered"] += 1
+                cls_name = self._class_name(local_pawn)
+                role, form = self._class_role_info(cls_name)
+                role_state = self._update_player_state_tracker(local_ps, role, form, cls_name, local_pawn, pos, now)
+                yield TargetSnapshot(
+                    is_local=True,
+                    pos=pos,
+                    idx=0,
+                    display_name="自己",
+                    player_id=self._player_id(local_ps),
+                    short_id=self._short_pointer_id(local_ps, local_pawn),
+                    player_state=local_ps,
+                    pawn=local_pawn,
+                    class_name=cls_name,
+                    role=role,
+                    stable_role=role_state.get("stable_role", role),
+                    filter_role=role_state.get("filter_role", role),
+                    form=form,
+                    source="local",
+                )
+
+        # Pass 1: GameState->PlayerArray. This is the stable player source;
+        # the level-actor scan can include NPCs/dummies with garbage positions.
+        yielded = 0
+        if gamestate:
+            pa_data, pa_count, _ = read_array(self.pm, gamestate + self.offsets["AGameStateBase::PlayerArray"])
+            stats["pa_total"] = pa_count
+            if pa_data and pa_count > 0:
+                for i in range(pa_count):
+                    ps = rp(self.pm, pa_data + i * 8)
+                    pa_item = {
+                        "idx": i,
+                        "player_state": self._debug_hex(ps),
+                        "pawn": "0x0",
+                    }
+                    if not ps:
+                        pa_item["result"] = "skip"
+                        pa_item["reason"] = "no_player_state"
+                        playerarray_debug.append(pa_item)
+                        continue
+                    active_player_states.add(ps)
+                    pa_item.update(self._player_debug_identity(ps))
+                    if ps == local_ps:
+                        pa_item["result"] = "skip"
+                        pa_item["reason"] = "local_player_state"
+                        playerarray_debug.append(pa_item)
+                        continue
+                    pawn = rp(self.pm, ps + self.offsets["APlayerState::PawnPrivate"])
+                    pa_item["pawn"] = self._debug_hex(pawn)
+                    if not pawn:
+                        pa_item["result"] = "skip"
+                        pa_item["reason"] = "no_pawn"
+                        playerarray_debug.append(pa_item)
+                        continue
+                    if pawn == local_pawn:
+                        pa_item["result"] = "skip"
+                        pa_item["reason"] = "local_pawn"
+                        playerarray_debug.append(pa_item)
+                        continue
+                    if pawn in seen:
+                        pa_item["result"] = "skip"
+                        pa_item["reason"] = "duplicate_pawn"
+                        playerarray_debug.append(pa_item)
+                        continue
+                    pawn_cls = self._class_name(pawn)
+                    pa_item["class"] = pawn_cls
+                    if not pawn_cls:
+                        pa_item["result"] = "skip"
+                        pa_item["reason"] = "no_class"
+                        playerarray_debug.append(pa_item)
+                        continue
+                    pos_info = self._actor_position_info(pawn)
+                    pos = pos_info["position"]
+                    pa_item["position"] = self._debug_pos(pos)
+                    pa_item["position_source"] = pos_info["source"]
+                    pa_item["reverse_player_state"] = self._debug_hex(self._pawn_playerstate(pawn))
+                    pa_item["controller"] = self._debug_hex(self._pawn_controller(pawn))
+                    pa_item["short_id"] = self._short_pointer_id(ps, pawn)
+                    role, form = self._class_role_info(pawn_cls)
+                    pa_item["role"] = role
+                    pa_item["form"] = form
+                    if pos is None:
+                        pa_item["result"] = "skip"
+                        pa_item["reason"] = "no_position"
+                        playerarray_debug.append(pa_item)
+                        continue
+                    seen_life_pawns.add(pawn)
+                    role_state = self._update_player_state_tracker(ps, role, form, pawn_cls, pawn, pos, now)
+                    pa_item.update(role_state)
+                    if self.offsets.get("APawn::PlayerState", 0) and self._pawn_playerstate(pawn) != ps:
+                        stats["pa_suspect"] += 1
+                    seen.add(pawn)
+                    if _is_dead_or_spectator_class(pawn_cls):
+                        linked_info = self._spectate_linked_character_info(pawn, ps)
+                        pa_item["spectate_link"] = linked_info
+                        linked_actor = linked_info.get("actor", 0)
+                        if linked_info.get("reason") == "linked_character" and linked_actor and linked_actor not in seen:
+                            linked_cls = linked_info.get("class") or self._class_name(linked_actor)
+                            linked_role, linked_form = self._class_role_info(linked_cls)
+                            linked_pos = self._actor_position(linked_actor)
+                            role_state = self._update_player_state_tracker(
+                                ps, linked_role, linked_form, linked_cls, linked_actor, linked_pos, now
+                            )
+                            stats["pa_linked"] += 1
+                            pa_item["pawn_class"] = pawn_cls
+                            pa_item["linked_actor"] = self._debug_hex(linked_actor)
+                            pa_item["linked_class"] = linked_cls
+                            pa_item["linked_position"] = self._debug_pos(linked_pos)
+                            pa_item["class"] = linked_cls
+                            pa_item["role"] = linked_role
+                            pa_item["form"] = linked_form
+                            pa_item.update(role_state)
+                            pa_item["result"] = "candidate"
+                            pa_item["reason"] = "spectate_linked_character"
+                            playerarray_debug.append(pa_item)
+                            seen.add(linked_actor)
+                            yield from _emit_actor(
+                                linked_actor, i, "pa_valid", pa_item["display_name"],
+                                source="player_array_spectate_link", player_state=ps, role_state=role_state
+                            )
+                            yielded += 1
+                            continue
+                        stats["pa_dead"] += 1
+                        jump_key = self._debug_hex(ps or pawn)
+                        active_position_keys.add(jump_key)
+                        jumped, jump_distance = self._track_position_jump(jump_key, pos, now)
+                        pa_item["position_jump"] = jumped
+                        pa_item["position_jump_distance"] = round(float(jump_distance), 3)
+                        pa_item["result"] = "skip"
+                        pa_item["reason"] = "dead_or_spectator"
+                        playerarray_debug.append(pa_item)
+                        continue
+                    pa_item["result"] = "candidate"
+                    pa_item["reason"] = ""
+                    playerarray_debug.append(pa_item)
+                    yield from _emit_actor(
+                        pawn, i, "pa_valid", pa_item["display_name"],
+                        source="player_array", player_state=ps, role_state=role_state
+                    )
+                    yielded += 1
+
+        # Pass 2: Persistent level actors (fallback / merge).
+        # ESP uses this to catch players PlayerArray hasn't updated yet.
+        if not players_only:
+            persistent_level_off = self.offsets.get("UWorld::PersistentLevel", 0x30)
+            level = rp(self.pm, world + persistent_level_off)
+            if level:
+                actors_off = self.offsets.get("ULevel::Actors", 0xA0)
+                actors_data, actors_count, _ = read_array(self.pm, level + actors_off)
+                stats["level_total"] = actors_count
+                if actors_data and actors_count > 0 and actors_count < 10000:
+                    for i in range(actors_count):
+                        actor = rp(self.pm, actors_data + i * 8)
+                        level_item = {
+                            "idx": i,
+                            "actor": self._debug_hex(actor),
+                        }
+                        if not actor:
+                            continue
+                        if actor == local_pawn:
+                            level_item["result"] = "skip"
+                            level_item["reason"] = "local_pawn"
+                            level_debug.append(level_item)
+                            continue
+                        if actor in seen:
+                            level_item["result"] = "skip"
+                            level_item["reason"] = "duplicate_actor"
+                            level_debug.append(level_item)
+                            continue
+                        cls_name = self._class_name(actor)
+                        level_item["class"] = cls_name
+                        if not cls_name or "Character" not in cls_name:
+                            level_item["result"] = "skip"
+                            level_item["reason"] = "non_character"
+                            # 只记录和目标相关的条目，避免日志被普通场景 Actor 淹没。
+                            continue
+                        # Level Actor 扫描会捞到尸体、残留模型或未绑定玩家的旧 Character。
+                        # 只有仍然挂着 PlayerState/Controller 的 Character 才作为 fallback 目标。
+                        actor_ps = self._pawn_playerstate(actor)
+                        controller = self._pawn_controller(actor)
+                        if actor_ps:
+                            active_player_states.add(actor_ps)
+                        level_item["player_state"] = self._debug_hex(actor_ps)
+                        level_item["controller"] = self._debug_hex(controller)
+                        pos_info = self._actor_position_info(actor)
+                        level_item["position"] = self._debug_pos(pos_info["position"])
+                        level_item["position_source"] = pos_info["source"]
+                        if not actor_ps and not controller:
+                            stats["level_orphan"] += 1
+                            level_item["result"] = "skip"
+                            level_item["reason"] = "unbound_orphan"
+                            level_debug.append(level_item)
+                            continue
+                        seen.add(actor)
+                        if _is_dead_or_spectator_class(cls_name):
+                            level_item["result"] = "skip"
+                            level_item["reason"] = "dead_or_spectator"
+                            level_debug.append(level_item)
+                            continue
+                        level_item["result"] = "candidate"
+                        level_item["reason"] = ""
+                        level_item["player_id"] = self._player_id(actor_ps)
+                        name_info = self._player_display_name_info(actor_ps)
+                        level_item["display_name"] = name_info.get("name") or self._player_display_label(actor_ps)
+                        level_item["display_name_source"] = name_info.get("source", "")
+                        level_item["display_name_reader"] = name_info.get("reader", "")
+                        level_item["name_candidates"] = name_info.get("candidates", [])
+                        level_item["short_id"] = self._short_pointer_id(actor_ps, actor)
+                        role, form = self._class_role_info(cls_name)
+                        role_state = self._update_player_state_tracker(actor_ps, role, form, cls_name, actor, pos_info["position"], now)
+                        level_item["role"] = role
+                        level_item.update(role_state)
+                        level_item["form"] = form
+                        level_debug.append(level_item)
+                        yield from _emit_actor(
+                            actor, i, "level_valid", level_item["display_name"],
+                            source="level_actor", player_state=actor_ps, role_state=role_state
+                        )
+
+        self._last_iter_stats = stats
+        self._cleanup_pawn_life_tracker(seen_life_pawns, now)
+        self._cleanup_target_position_cache(active_position_keys, now)
+        self._cleanup_player_state_tracker(active_player_states, now)
+
+
+# ---------------------------------------------------------------------------
+# World-to-screen
+# ---------------------------------------------------------------------------
+def rotation_to_axes(rot):
+    pitch, yaw, roll = [math.radians(x) for x in rot]
+    sp, cp = math.sin(pitch), math.cos(pitch)
+    sy, cy = math.sin(yaw), math.cos(yaw)
+    sr, cr = math.sin(roll), math.cos(roll)
+
+    forward = (cp * cy, cp * sy, sp)
+    right = (sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, -sr * cp)
+    up = (-(cr * sp * cy + sr * sy), cy * sr - cr * sp * sy, cr * cp)
+    return forward, right, up
+
+
+def w2s(world_pos, camera, screen_w, screen_h):
+    info = project_debug(world_pos, camera, screen_w, screen_h)
+    if not info["visible"]:
+        return None
+    return tuple(info["screen"])
+
+
+def project_debug(world_pos, camera, screen_w, screen_h):
+    cam_loc = camera["loc"]
+    cam_rot = camera["rot"]
+    fov = camera["fov"]
+
+    forward, right, up = rotation_to_axes(cam_rot)
+
+    dx = world_pos[0] - cam_loc[0]
+    dy = world_pos[1] - cam_loc[1]
+    dz = world_pos[2] - cam_loc[2]
+
+    view_x = dx * forward[0] + dy * forward[1] + dz * forward[2]
+    view_y = dx * right[0] + dy * right[1] + dz * right[2]
+    view_z = dx * up[0] + dy * up[1] + dz * up[2]
+
+    if view_x <= 0.1:
+        return {
+            "visible": False,
+            "reason": "behind_camera",
+            "view": [round(view_x, 3), round(view_y, 3), round(view_z, 3)],
+        }
+
+    aspect = screen_w / screen_h
+    tan_hfov = math.tan(math.radians(fov) / 2.0)
+
+    ndc_x = view_y / (view_x * tan_hfov)
+    ndc_y = view_z / (view_x * tan_hfov / aspect)
+
+    screen_x = (1.0 + ndc_x) * screen_w / 2.0
+    screen_y = (1.0 - ndc_y) * screen_h / 2.0
+
+    visible = 0 <= screen_x <= screen_w and 0 <= screen_y <= screen_h
+    reason = None if visible else "outside_view"
+    if not visible and 0 <= screen_x <= screen_w:
+        reason = "outside_view_y"
+    elif not visible and 0 <= screen_y <= screen_h:
+        reason = "outside_view_x"
+
+    result = {
+        "visible": visible,
+        "reason": reason,
+        "screen": [round(screen_x, 2), round(screen_y, 2)],
+        "ndc": [round(ndc_x, 4), round(ndc_y, 4)],
+        "view": [round(view_x, 3), round(view_y, 3), round(view_z, 3)],
+    }
+    if not (0 <= screen_x <= screen_w and 0 <= screen_y <= screen_h):
+        return result
+    return result

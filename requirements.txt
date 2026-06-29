@@ -1,0 +1,3 @@
+pymem
+PyQt5
+pywin32
