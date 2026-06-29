@@ -22,7 +22,6 @@
 - 菜单设置会自动保存，源码运行时写入项目根目录 `config.json`，打包版写入 `%LOCALAPPDATA%\Chameleon Lens\config.json`。
 - 快捷键页支持配置菜单显隐、覆盖层总开关、ESP 绘制和雷达面板开关；菜单显隐默认 `F1`，其余默认不启用。
 - 外观页支持恢复默认外观，方便快速回退颜色、圆点半径和菜单透明度。
-- 提供 `debug_life_state.py` 用于记录存活/阵亡前后的玩家数据，并可用 `debug_life_state.py names` 扫描玩家昵称候选字段。
 - 调试页支持开启“数据记录”，并可一键打开日志目录；日志会在 `logs/runtime_debug_*.jsonl` 中记录采样/绘制耗时、候选目标、过滤统计、投影原因、边缘提示原因、角色形态和位置大跳变。
 
 ## 环境要求
@@ -32,12 +31,12 @@
 - 游戏使用窗口化或无边框窗口模式
 
 ```bash
-启动 Chameleon Lens.bat
+run.bat
 ```
 
 ## 使用方式
 
-1. 双击 `启动 Chameleon Lens.bat`。
+1. 双击 `run.bat`。
 2. 如果游戏尚未启动，程序会保持运行并在标题栏显示“未连接 · 等待进程”。
 3. 启动 MECCHA CHAMELEON 后，覆盖层会自动尝试连接目标进程。
 4. 默认按 **F1** 显示/隐藏菜单，也可以在“快捷键”页修改。
@@ -45,7 +44,7 @@
 
 ESP 页只负责屏幕 ESP、目标点、标签和射线开关；雷达设置统一放在“雷达”页。关闭“ESP 绘制”只会隐藏屏幕 ESP，雷达仍由“雷达面板”独立控制。
 
-首次运行时，批处理会自动检查 Python 3.11+、创建 `.venv`、安装 `requirements.txt` 中的依赖，然后通过 `python -m chameleon_lens` 启动主程序。根目录 `esp.py` 仅保留兼容入口。
+首次运行时，批处理会自动检查 Python 3.11+、创建 `.venv`、安装 `requirements.txt` 中的依赖，然后通过 `python -m chameleon_lens` 启动主程序。根目录不再保留旧版 `esp.py` 兼容入口；Nuitka 打包使用 `main.py` 作为干净入口。
 
 后续运行时，如果 `.venv` 已存在且 `requirements.txt` 未变化，`run.bat` 会跳过启动器和 pip 检查，直接进入主程序。需要生成可执行文件时运行 `build_nuitka.bat`，输出位于 `dist\ChameleonLens.exe`。
 

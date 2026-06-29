@@ -15,10 +15,10 @@
 
 - `chameleon_lens/`：主程序包，按内存读取、目标读取、配置、运行时、UI、覆盖层和入口拆分。
 - `chameleon_lens/radar.py`：雷达坐标转换，把目标相对相机位置投影到雷达盘面。
-- `esp.py`：兼容入口，旧调试脚本仍可从这里导入 `MecchaESP`、`rp`、`read_array` 等对象；新业务不要继续写入该文件。
+- `main.py`：Nuitka 打包入口，源码开发和日常启动优先使用 `python -m chameleon_lens`。
 - `run.bat`：Windows 一键启动脚本，依赖未变化时直接快速启动，首次运行或依赖变化时转交 `bootstrap.py`。
 - `bootstrap.py`：启动器，负责创建 `.venv`、按 `requirements.txt` 哈希安装依赖，最终通过 `python -m chameleon_lens` 进入主程序。
-- `build_nuitka.bat`：Nuitka 打包脚本，输出 `dist\ChameleonLens.exe`。
+- `build_nuitka.bat`：Nuitka 打包脚本，输出 `dist\ChameleonLens.exe`，成功后清理 Nuitka 中间目录。
 - `VERSION`：应用版本号单一来源。
 - `assets/`：应用图标资源；`chameleon.svg` 来自 Wikimedia Commons，`chameleon.ico` 由工具脚本生成。
 - `requirements.txt`：运行依赖清单，由启动脚本自动安装到 `.venv`。
@@ -37,8 +37,6 @@
 - `docs/ui_color_picker.png`：自定义深色颜色选择面板截图。
 - `tools/analyze_runtime_debug.py`：汇总 `logs/runtime_debug_*.jsonl`，用于快速判断漏绘制发生在死亡过滤、目标过滤、坐标读取还是投影阶段。
 - `tools/generate_app_icon.py`：从 `assets/chameleon.svg` 生成 Windows `.ico` 图标。
-- `debug_teams.py`、`diag_fname.py`、`find_prop_offsets.py`：调试和定位工具，暂未改动。
-- `debug_life_state.py`：记录 PlayerArray 和 Level Character 在存活/阵亡前后的字段变化，并记录可选 `display_name`，用于定位死亡过滤和玩家名字段。
 - `README.md`：面向使用者的中文说明。
 
 ## 设计约定
@@ -48,7 +46,7 @@
 - 目标进程未出现时，状态只显示在菜单标题栏右上角；覆盖层保持透明，不绘制等待提示卡。
 - 进程连接失败属于正常状态：`ESPRuntime.connect_once()` 捕获异常、更新状态，并由入口定时器重试。
 - 应用入口通过 Windows 命名互斥体 `Global\ChameleonLensMecchaEsp` 做单例保护，重复启动会直接退出。
-- 运行依赖统一通过项目内 `.venv` 管理，用户入口优先使用 `启动 Chameleon Lens.bat`。`run.bat` 通过 `.venv\.requirements.stamp` 对比 `requirements.txt` 哈希，依赖未变化时直接启动主程序，避免每次启动都进入 pip 检查。
+- 运行依赖统一通过项目内 `.venv` 管理，用户入口优先使用 `run.bat`。`run.bat` 通过 `.venv\.requirements.stamp` 对比 `requirements.txt` 哈希，依赖未变化时直接启动主程序，避免每次启动都进入 pip 检查。
 - 配置持久化使用 JSON。源码运行时写入项目根目录 `config.json`，便于开发排查；Nuitka 打包版写入 `%LOCALAPPDATA%\Chameleon Lens\config.json`，日志写入 `%LOCALAPPDATA%\Chameleon Lens\logs`，避免 onefile 临时目录或程序目录权限导致数据丢失。保存采用临时文件替换，避免写入中断导致配置损坏。
 - UI 信息架构按 `ESP / 雷达 / 外观 / 快捷键 / 调试` 五个顶部页签组织：ESP 页只放目标点、标签和射线控制，雷达页只放雷达与参数，外观页只放透明度、点半径和颜色，快捷键页只放全局开关按键。
 - ESP 页使用两列开关布局和 ESP 效果预览；雷达预览只出现在雷达页，避免一个页签同时承载两个主题。
@@ -80,7 +78,7 @@
 - 菜单只允许通过标题栏拖动，避免用户调节控件时误拖窗口。
 - 控制项标题和说明使用紧凑两行布局，避免标题与说明之间出现松散空隙。
 - 调试页“数据记录”会每秒写入 `logs/runtime_debug_*.jsonl`，并提供“打开日志”按钮用于打开当前运行日志目录。日志用于分析候选目标、过滤统计、投影原因、名称候选、角色形态、边缘提示和最终绘制结果。日志包含 `performance`、`projection_reasons`、`edge_reasons`、`player_array_debug`、`level_actor_debug` 和 `emitted_targets`：先看采样/绘制耗时是否异常，再看目标是否进入 PlayerArray、是否被过滤、位置来源和投影失败原因。若出现“候选/绘制/雷达数量相同但游戏内感觉少人”，重点看 `dead_or_spectator`、`spectate_link`、`pa_linked`、`role/stable_role/filter_role` 是否解释了被过滤对象。
-- 名称定位优先看 `player_array_debug[].name_candidates`、`display_name_source` 和 `display_name_reader`。如果局内仍读不到昵称，运行 `debug_life_state.py names` 扫描 PlayerState 附近的 FString/FText 候选，确认中文/英文/数字昵称是否在其他偏移。
+- 名称定位优先看 `player_array_debug[].name_candidates`、`display_name_source` 和 `display_name_reader`。如果局内仍读不到昵称，先保留开启数据记录后的最新 JSONL 日志，再按日志补充专门的 `tools/` 诊断脚本。
 - 位置大跳变超过阈值时会记录到 `position_jumps` 并清理旧 pawn/目标位置缓存，用于识别回合重置、地图切换或目标实例重建。
 - `player_array_debug[].reason` 记录 `no_pawn`、`local_pawn`、`duplicate_pawn`、`dead_or_spectator` 等跳过原因；`emitted_targets[].position_source` 记录当前使用的坐标来源。后续定位“突然不绘制”时，先确认 `pa_dead` 是否异常增加，以及未绘制帧里的 `position_source`、`projection_reasons` 和 `edge_reasons` 是否异常。
 - 菜单透明度使用窗口级 `setWindowOpacity()` 生效，外观页只开放 70%-96% 的可读区间，避免过低看不清、100% 过实。
@@ -94,7 +92,7 @@
 
 ## 后续维护建议
 
-- 若要修复阵亡后仍绘制的问题，先用 `debug_life_state.py sample --label alive` 和 `debug_life_state.py sample --label dead` 分别采集日志，再用 `debug_life_state.py compare <alive日志> <dead日志>` 对比变化字段；确认稳定字段后再接入 `MecchaESP.iter_players()` 的过滤逻辑。
+- 若要修复阵亡后仍绘制的问题，先开启调试页“数据记录”，分别保存存活和阵亡场景的 `runtime_debug_*.jsonl`，用 `tools/analyze_runtime_debug.py` 汇总后再判断是否需要新增专门诊断脚本；确认稳定字段后再接入 `MecchaESP.iter_players()` 的过滤逻辑。
 - 若后续配置项变成多套预设、历史记录或复杂用户档案，再考虑 SQLite；当前单配置文件继续使用 JSON。
 - 若继续扩展 UI，优先抽取菜单控件工厂或样式常量，避免 `_build_ui()` 继续膨胀；`ui.menu` 不直接 import `reader`，目标进程信息经 `runtime` 暴露。
 - 若要提高 ESP 刷新率，先对比 `performance.sample_ms` 和 `performance.paint_ms`；采样开销偏高时优先降低内存读取频率或增加缓存，绘制开销偏高时再优化 QPainter 绘制。

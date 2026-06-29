@@ -9,13 +9,13 @@
 - `VERSION`：应用版本号。
 - `bootstrap.py`：启动器，创建 `.venv`、按依赖哈希安装依赖并通过 `python -m chameleon_lens` 启动。
 - `run.bat`：Windows 双击入口，依赖未变化时直接快速启动，必要时转发到 `bootstrap.py`。
-- `build_nuitka.bat`：Nuitka 打包入口。
+- `main.py`：Nuitka 打包入口，转入 `chameleon_lens.app.main()`。
+- `build_nuitka.bat`：Nuitka 打包脚本，使用 `main.py` 生成 `dist\ChameleonLens.exe` 并清理中间目录。
 - `assets/`：应用图标 SVG/ICO 和资产说明。
-- `esp.py`：兼容入口，旧脚本仍可 `from esp import MecchaESP`。
 - `requirements.txt`：运行依赖。
 - `config.json`：用户配置，运行时自动生成和保存。
 - `logs/`：调试采样日志。
-- `tools/`：UI 概念稿渲染脚本。
+- `tools/`：日志分析和图标生成等正式维护工具。
 - `docs/`：架构、代码地图、UI 概念和开发说明。
 - `chameleon_lens/`：主程序包。
 
@@ -171,8 +171,7 @@ python -m chameleon_lens
 - 在调试日志中记录采样耗时、绘制耗时和刷新间隔。
 - 连接断开时通知运行时和菜单。
 
-## 调试脚本
+## 维护工具
 
-- `debug_life_state.py`：采集 PlayerArray、Level Character、display_name、名称候选和原始字段窗口，用于对比存活/阵亡；`names` 子命令用于扫描昵称候选字段。
-- `debug_teams.py`：查看 PlayerArray 与 Level Actor 的基础结构。
-- `diag_fname.py`、`find_prop_offsets.py`：定位 FName 和属性偏移。
+- `tools/analyze_runtime_debug.py`：汇总运行日志，辅助判断漏绘制、过滤和投影问题。
+- `tools/generate_app_icon.py`：从 SVG 生成 Windows ICO 图标。

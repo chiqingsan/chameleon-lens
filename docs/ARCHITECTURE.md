@@ -4,7 +4,7 @@
 
 ## 当前总体结构
 
-项目已经从单文件 `esp.py` 拆为 `chameleon_lens` 包。根目录 `esp.py` 只保留兼容入口和旧调试脚本 re-export。
+项目已经从单文件结构拆为 `chameleon_lens` 包。根目录不再保留旧版 `esp.py` 兼容入口；源码运行使用 `python -m chameleon_lens`，Nuitka 打包使用 `main.py` 进入同一个应用组合根。
 
 - `chameleon_lens.memory`：UE 基础内存读取、偏移解析、FName、UObjectArray 和安全读写原语。
 - `chameleon_lens.reader`：MECCHA CHAMELEON 读取器、玩家枚举、`TargetSnapshot`、死亡/观战过滤、角色形态分类、位置跳变检测和世界到屏幕投影。
@@ -40,20 +40,20 @@ radar -> 标准库
 - `ui.menu` 可以读写配置、刷新预览，但不做内存扫描。
 - `overlay` 只消费 `Config`、`ESPRuntime` 和 `reader` 输出，不直接构建菜单页面。
 - `radar` 只做坐标转换，不依赖 Qt、配置对象或内存读取。
-- 根目录 `esp.py` 只做兼容入口，不再新增业务逻辑。
+- 根目录不新增兼容导出脚本；需要复用能力时从 `chameleon_lens` 包内明确导入。
 
 ## 当前风险点
 
 - `chameleon_lens.ui.widgets` 和 `chameleon_lens.ui.menu` 仍然偏大，这是第一阶段拆分后的自然过渡状态。
-- `reader.iter_players()` 是目标过滤核心，改动前应优先采集 `debug_life_state.py` 日志。
+- `reader.iter_players()` 是目标过滤核心，改动前应优先开启运行日志并用 `tools/analyze_runtime_debug.py` 汇总现象。
 - 覆盖层仍负责雷达绘制，但雷达坐标转换已经拆到 `chameleon_lens.radar`。
-- 启动器已改为 `python -m chameleon_lens`，但保留 `esp.py` 兼容旧脚本。
+- 启动器和打包脚本都已指向新入口，旧脚本依赖不再作为兼容目标。
 
 ## 演进路线
 
 短期：
 
-- 新功能不再写进根目录 `esp.py`。
+- 新功能不写进根目录入口文件，按职责落到 `chameleon_lens` 包内模块。
 - 真实雷达优先新增到 `reader` 的目标数据模型、`radar` 的坐标转换和 `overlay` 的雷达绘制，不直接塞进菜单。
 - UI 小控件继续放在 `ui.widgets`，页面级布局放在 `ui.menu`。
 
