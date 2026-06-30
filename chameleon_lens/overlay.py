@@ -42,6 +42,7 @@ class Overlay(QWidget):
         self._snapshot_collect_debug = False
         self._last_sample_ms = 0.0
         self._last_paint_ms = 0.0
+        self._last_debug_config = None
 
         self.paint_timer = QTimer(self)
         self.paint_timer.setTimerType(Qt.PreciseTimer)
@@ -463,10 +464,46 @@ class Overlay(QWidget):
     def _round_pos(self, pos):
         return [round(float(v), 3) for v in pos] if pos else None
 
+    def _debug_config_snapshot(self):
+        return {
+            "enabled": self.config.enabled,
+            "esp_enabled": self.config.esp_enabled,
+            "show_hunter_esp": self.config.show_hunter_esp,
+            "box_esp": self.config.box_esp,
+            "show_local": self.config.show_local,
+            "show_names": self.config.show_names,
+            "show_distance": self.config.show_distance,
+            "snap_lines": self.config.snap_lines,
+            "show_local_snap_line": self.config.show_local_snap_line,
+            "show_edge_indicators": self.config.show_edge_indicators,
+            "radar_enabled": self.config.radar_enabled,
+        }
+
+    def _debug_config_changes(self, current):
+        previous = self._last_debug_config
+        self._last_debug_config = dict(current)
+        if previous is None:
+            return []
+        source_info = getattr(self.config, "_last_change_source", {}) or {}
+        source = source_info.get("source") or "unknown_or_menu"
+        changes = []
+        for key, value in current.items():
+            old_value = previous.get(key)
+            if old_value != value:
+                changes.append({
+                    "field": key,
+                    "from": old_value,
+                    "to": value,
+                    "source": source if source_info.get("field") == key else "unknown_or_menu",
+                })
+        return changes
+
     def _record_debug_frame(self, esp, camera, players, targets, radar_points, drawn_count, screen_w, screen_h):
         if not self.config.record_debug_data:
             return
         stats = getattr(esp, "_last_iter_stats", {})
+        config_snapshot = self._debug_config_snapshot()
+        config_changes = self._debug_config_changes(config_snapshot)
         projection_reasons = {}
         edge_reasons = {}
         for item in targets:
@@ -480,19 +517,8 @@ class Overlay(QWidget):
             projection_reasons[reason] = projection_reasons.get(reason, 0) + 1
         self.debug_recorder.write({
             "screen": {"w": screen_w, "h": screen_h},
-            "config": {
-                "enabled": self.config.enabled,
-                "esp_enabled": self.config.esp_enabled,
-                "show_hunter_esp": self.config.show_hunter_esp,
-                "box_esp": self.config.box_esp,
-                "show_local": self.config.show_local,
-                "show_names": self.config.show_names,
-                "show_distance": self.config.show_distance,
-                "snap_lines": self.config.snap_lines,
-                "show_local_snap_line": self.config.show_local_snap_line,
-                "show_edge_indicators": self.config.show_edge_indicators,
-                "radar_enabled": self.config.radar_enabled,
-            },
+            "config": config_snapshot,
+            "config_changes": config_changes,
             "camera": {
                 "loc": self._round_pos(camera.get("loc")),
                 "rot": self._round_pos(camera.get("rot")),

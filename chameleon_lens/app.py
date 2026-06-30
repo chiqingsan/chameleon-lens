@@ -81,15 +81,19 @@ def main():
 
     _key_states = {}
 
+    def _toggle_config_attr(attr, source):
+        setattr(config, attr, not bool(getattr(config, attr)))
+        config._last_change_source = {"field": attr, "source": source}
+
     def poll_keys():
         if menu.is_capturing_hotkey():
             _key_states.clear()
             return
         actions = [
             ("menu", config.hotkey_menu_toggle, lambda: menu.setVisible(not menu.isVisible())),
-            ("overlay", config.hotkey_overlay_toggle, lambda: setattr(config, "enabled", not config.enabled)),
-            ("esp", config.hotkey_esp_toggle, lambda: setattr(config, "esp_enabled", not config.esp_enabled)),
-            ("radar", config.hotkey_radar_toggle, lambda: setattr(config, "radar_enabled", not config.radar_enabled)),
+            ("overlay", config.hotkey_overlay_toggle, lambda: _toggle_config_attr("enabled", "hotkey:overlay")),
+            ("esp", config.hotkey_esp_toggle, lambda: _toggle_config_attr("esp_enabled", "hotkey:esp")),
+            ("radar", config.hotkey_radar_toggle, lambda: _toggle_config_attr("radar_enabled", "hotkey:radar")),
         ]
         for name, key, action in actions:
             key = normalize_hotkey(key)

@@ -52,6 +52,24 @@ def print_metric(title, values):
     print(f"  avg={avg:.2f}ms p95={p95:.2f}ms max={values[-1]:.2f}ms")
 
 
+def mode_label(value):
+    text = str(value)
+    return {
+        "0": "感染",
+        "1": "非感染",
+        "2": "未知2",
+    }.get(text, text)
+
+
+def main_phase_label(value):
+    return {
+        0: "准备/切换",
+        1: "开局准备",
+        2: "对局中",
+        3: "结算",
+    }.get(value, str(value))
+
+
 def summarize(path):
     rows = load_rows(path)
     print(f"日志：{path}")
@@ -95,8 +113,11 @@ def summarize(path):
     character_flag_values = Counter()
     character_physics_values = Counter()
     context_events = Counter()
+    config_change_values = Counter()
     converted_hunter_items = Counter()
     role_timeline = defaultdict(list)
+    match_timeline = []
+    last_match_key = None
     sample_ms = []
     paint_ms = []
     edge_frames = 0
@@ -107,9 +128,17 @@ def summarize(path):
     pa_orphan_frames = 0
     pa_suspect_frames = 0
     pa_suppressed_frames = 0
+    pa_cached_frames = 0
 
     for row in rows:
         stats = row.get("stats") or {}
+        for change in row.get("config_changes") or []:
+            config_change_values[(
+                change.get("field") or "unknown",
+                change.get("from"),
+                change.get("to"),
+                change.get("source") or "unknown",
+            )] += 1
         performance = row.get("performance") or {}
         if isinstance(performance.get("sample_ms"), (int, float)):
             sample_ms.append(float(performance["sample_ms"]))
@@ -121,6 +150,7 @@ def summarize(path):
             stats.get("pa_valid"),
             stats.get("pa_dead"),
             stats.get("pa_linked", 0),
+            stats.get("pa_cached", 0),
             stats.get("pa_suppressed", 0),
             stats.get("pa_orphan"),
             stats.get("pa_suspect"),
@@ -138,6 +168,8 @@ def summarize(path):
             pa_suspect_frames += 1
         if stats.get("pa_suppressed", 0):
             pa_suppressed_frames += 1
+        if stats.get("pa_cached", 0):
+            pa_cached_frames += 1
         context = row.get("reader_context") or {}
         contexts[(
             context.get("game_state_class") or "",
@@ -166,6 +198,35 @@ def summarize(path):
                 (game_fields.get("hunters_player_state") or {}).get("count"),
                 (game_fields.get("live_survivors_controller") or {}).get("count"),
             )] += 1
+            live_count = (game_fields.get("live_survivors_player_state") or {}).get("count")
+            hunter_count = (game_fields.get("hunters_player_state") or {}).get("count")
+            plausible_counts = (
+                isinstance(live_count, int) and isinstance(hunter_count, int)
+                and 0 <= live_count <= 64 and 0 <= hunter_count <= 64
+            )
+            timeline_key = (
+                game_fields.get("game_mode_raw"),
+                game_fields.get("main_game_phase"),
+                game_fields.get("current_game_phase"),
+                live_count,
+                hunter_count,
+                game_fields.get("timer_text_index"),
+                game_fields.get("max_timer_time"),
+                stats.get("pa_dead"),
+                stats.get("pa_linked", 0),
+                stats.get("pa_cached", 0),
+                stats.get("pa_suppressed", 0),
+            )
+            if plausible_counts and timeline_key != last_match_key:
+                match_timeline.append((
+                    row.get("time"),
+                    timeline_key,
+                    stats.get("pa_total"),
+                    stats.get("pa_valid"),
+                    row.get("drawn"),
+                    len(row.get("radar_targets") or []),
+                ))
+                last_match_key = timeline_key
 
         projection_reasons.update(row.get("projection_reasons") or {})
         row_edge_reasons = row.get("edge_reasons") or {}
@@ -313,6 +374,7 @@ def summarize(path):
 
     print(f"pa_dead 出现帧：{pa_dead_frames}")
     print(f"pa_linked 出现帧：{pa_linked_frames}")
+    print(f"pa_cached 出现帧：{pa_cached_frames}")
     print(f"pa_suppressed 出现帧：{pa_suppressed_frames}")
     print(f"pa_orphan 出现帧：{pa_orphan_frames}")
     print(f"pa_suspect 出现帧：{pa_suspect_frames}")
@@ -321,7 +383,7 @@ def summarize(path):
     print_metric("性能: 目标采样", sample_ms)
     print_metric("性能: 覆盖层绘制", paint_ms)
     print_counter("候选/绘制/雷达 Top", candidate_drawn, len(rows))
-    print_counter("统计 Top: pa_total, pa_valid, pa_dead, pa_linked, pa_suppressed, pa_orphan, pa_suspect, level_valid, level_orphan, rendered", stats_counter, len(rows))
+    print_counter("统计 Top: pa_total, pa_valid, pa_dead, pa_linked, pa_cached, pa_suppressed, pa_orphan, pa_suspect, level_valid, level_orphan, rendered", stats_counter, len(rows))
     print_counter("投影失败原因", projection_reasons or target_reasons)
     print_counter("边缘绘制原因", edge_reasons)
     print_counter("PlayerArray 跳过/候选原因", pa_reasons)
@@ -334,6 +396,7 @@ def summarize(path):
     print_counter("已接受名称", accepted_names)
     print_counter("对局上下文 Top: GameStateClass, GameStateName, LevelName, LocalPawnClass", contexts)
     print_counter("上下文变化事件", context_events)
+    print_counter("配置变化: field, from, to, source", config_change_values)
     print_counter("GameMode 原始值", game_mode_raw_values)
     print_counter("GameState 阶段: MainGamePhase, CurrentGamePhase", game_phase_values)
     print_counter("地图索引 MapIndex", game_map_values)
@@ -357,6 +420,20 @@ def summarize(path):
     print_counter("已转猎人 PlayerState 项: Role, Stable, Filter, Reason", converted_hunter_items)
     print_counter("形态分类", forms)
 
+    if match_timeline:
+        print("\n对局时间线")
+        for time, key, pa_total, pa_valid, drawn, radar_count in match_timeline[:48]:
+            mode, main_phase, current_phase, live_count, hunter_count, timer_idx, max_time, pa_dead, pa_linked, pa_cached, pa_suppressed = key
+            print(
+                f"  {time} mode={mode_label(mode)}({mode}) "
+                f"phase={main_phase_label(main_phase)}({main_phase}/{current_phase}) "
+                f"live/hunter={live_count}/{hunter_count} timer_idx/max={timer_idx}/{max_time} "
+                f"PA={pa_total}/{pa_valid} dead={pa_dead} linked={pa_linked} cached={pa_cached} suppressed={pa_suppressed} "
+                f"draw/radar={drawn}/{radar_count}"
+            )
+        if len(match_timeline) > 48:
+            print(f"  ... 还有 {len(match_timeline) - 48} 个变化点")
+
     changing_players = {
         ps: timeline for ps, timeline in role_timeline.items()
         if len({item[3] for item in timeline if item[3] != "unknown"}) > 1
@@ -379,6 +456,8 @@ def summarize(path):
         print("  pa_dead 没出现：死亡/观战类过滤暂时不是首要嫌疑。")
     if pa_linked_frames:
         print("  pa_linked 有出现：SpectatePawn 指向了真实 Character，覆盖层已改用该 Character 绘制。")
+    if pa_cached_frames:
+        print("  pa_cached 有出现：GameState 仍确认存活但 PlayerArray Pawn 为空时，已用最近的非观战角色实例兜底绘制。")
     if pa_suppressed_frames:
         print("  pa_suppressed 有出现：同一 PlayerState 已从躲藏者转为猎人，旧 Spectate 链接躲藏模型被抑制。")
     if sample_ms or paint_ms:

@@ -146,6 +146,7 @@ class MecchaESP:
     POSITION_JUMP_UNITS = 30000.0
     ROLE_SWITCH_GRACE_SECONDS = 1.2
     PLAYER_TRACKER_TTL_SECONDS = 20.0
+    LIVE_SURVIVOR_CACHE_SECONDS = 8.0
     NAME_CACHE_SECONDS = 1.0
     SPECTATE_LINKED_CHARACTER_OFFSET = 0x1A0
     GAMESTATE_DIAGNOSTIC_OFFSETS = {
@@ -778,6 +779,34 @@ class MecchaESP:
         self._player_state_tracker.clear()
         self._player_name_cache.clear()
 
+    def _cached_live_survivor_actor(self, player_state, game_membership, now):
+        """GameState 仍确认存活时，用最近的非观战角色实例兜底 PlayerArray 短暂空 Pawn。"""
+        if not player_state or not game_membership.get("valid"):
+            return 0, {}
+        if player_state not in game_membership.get("live_survivors", set()):
+            return 0, {}
+        item = self._player_state_tracker.get(player_state) or {}
+        age = now - item.get("last_seen", now)
+        actor = item.get("last_non_spectator_pawn", 0)
+        if (
+            not actor
+            or age > self.LIVE_SURVIVOR_CACHE_SECONDS
+            or item.get("last_non_spectator_role") != "survivor"
+        ):
+            return 0, {}
+        cls_name = self._class_name(actor)
+        if not self._is_character_class(cls_name):
+            return 0, {}
+        pos = self._actor_position(actor)
+        if pos is None or self._is_origin_position(pos):
+            return 0, {}
+        return actor, {
+            "age": round(float(age), 3),
+            "class": cls_name,
+            "position": self._debug_pos(pos),
+            "last_position": self._debug_pos(item.get("last_non_spectator_pos")),
+        }
+
     def _update_world_signature(self, world, world_name, game_state, game_state_name, level_name):
         signature = (
             self._debug_hex(world),
@@ -935,7 +964,9 @@ class MecchaESP:
             "valid": bool(membership.get("valid")),
             "state": state,
             "mode_raw": membership.get("mode_raw"),
+            "mode_label": self._game_mode_label(membership.get("mode_raw")),
             "main_phase": membership.get("main_phase"),
+            "main_phase_label": self._main_phase_label(membership.get("main_phase")),
             "current_phase": membership.get("current_phase"),
             "live_count": membership.get("live_count", 0),
             "hunter_count": membership.get("hunter_count", 0),
@@ -957,6 +988,26 @@ class MecchaESP:
             return FORM_NAME_MAP.get("survivor", current_form)
         return current_form
 
+    @staticmethod
+    def _game_mode_label(mode_raw):
+        if mode_raw == 0:
+            return "infection"
+        if mode_raw == 1:
+            return "non_infection"
+        return "unknown"
+
+    @staticmethod
+    def _main_phase_label(main_phase):
+        return {
+            0: "idle_or_transition",
+            1: "pre_round",
+            2: "in_round",
+            3: "round_end",
+        }.get(main_phase, "unknown")
+
+    @staticmethod
+    def _is_character_class(cls_name):
+        return bool(cls_name) and "Character" in cls_name and "Spectate" not in cls_name
 
     def _game_state_debug_fields(self, gamestate):
         """记录 SDK 里已知的 GameState 原始字段，只用于后续模式指纹分析。"""
@@ -1066,7 +1117,7 @@ class MecchaESP:
         role, form = self._class_role_info(cls_name)
         info["role"] = role
         info["form"] = form
-        if collect_debug:
+        if collect_debug and self._is_character_class(cls_name):
             info["character_flags"] = self._character_debug_fields(linked)
         if not cls_name or "Character" not in cls_name or "Spectate" in cls_name:
             info["reason"] = "not_character"
@@ -1178,6 +1229,7 @@ class MecchaESP:
             self._last_iter_stats = {"pa_total": 0, "pa_valid": 0, "pa_dead": 0,
                                      "pa_orphan": 0, "pa_suspect": 0,
                                      "pa_linked": 0,
+                                     "pa_cached": 0,
                                      "pa_suppressed": 0,
                                      "level_total": 0, "level_valid": 0,
                                      "level_orphan": 0,
@@ -1207,6 +1259,7 @@ class MecchaESP:
 
         stats = {"pa_total": 0, "pa_valid": 0, "pa_dead": 0, "pa_orphan": 0, "pa_suspect": 0,
                  "pa_linked": 0,
+                 "pa_cached": 0,
                  "pa_suppressed": 0,
                  "level_total": 0, "level_valid": 0,
                  "level_orphan": 0,
@@ -1242,7 +1295,9 @@ class MecchaESP:
             self._last_iter_context["game_state_membership"] = {
                 "valid": bool(game_membership.get("valid")),
                 "mode_raw": game_membership.get("mode_raw"),
+                "mode_label": self._game_mode_label(game_membership.get("mode_raw")),
                 "main_phase": game_membership.get("main_phase"),
+                "main_phase_label": self._main_phase_label(game_membership.get("main_phase")),
                 "current_phase": game_membership.get("current_phase"),
                 "live_count": game_membership.get("live_count", 0),
                 "hunter_count": game_membership.get("hunter_count", 0),
@@ -1256,7 +1311,10 @@ class MecchaESP:
             # 不再用 Character 白名单或反向绑定延迟过滤，避免把特殊形态误判成非目标。
             return bool(cls_name) and "Spectate" in cls_name
 
-        def _emit_actor(actor, idx, stat_key, display_name="", source="unknown", player_state=0, role_state=None):
+        def _emit_actor(
+            actor, idx, stat_key, display_name="", source="unknown", player_state=0,
+            role_state=None, role_override="", form_override=""
+        ):
             pos_info = self._actor_position_info(actor)
             pos = pos_info["position"]
             name_info = (
@@ -1265,6 +1323,10 @@ class MecchaESP:
             )
             cls_name = self._class_name(actor)
             role, form = self._class_role_info(cls_name)
+            if role_override:
+                role = role_override
+            if form_override:
+                form = form_override
             if role_state is None:
                 role_state = self._update_player_state_tracker(player_state, role, form, cls_name, actor, pos, now)
             short_id = self._short_pointer_id(player_state, actor)
@@ -1297,7 +1359,7 @@ class MecchaESP:
                 "position_jump": jumped,
                 "position_jump_distance": round(float(jump_distance), 3),
             }
-            if collect_debug:
+            if collect_debug and self._is_character_class(cls_name):
                 item["character_flags"] = self._character_debug_fields(actor)
             if pos is None:
                 item["result"] = "skip"
@@ -1394,6 +1456,37 @@ class MecchaESP:
                     pawn = rp(self.pm, ps + self.offsets["APlayerState::PawnPrivate"])
                     pa_item["pawn"] = self._debug_hex(pawn)
                     if not pawn:
+                        pa_item["game_state_membership"] = self._player_membership_debug(ps, game_membership)
+                        cached_actor, cache_info = self._cached_live_survivor_actor(ps, game_membership, now)
+                        if cached_actor and cached_actor != local_pawn and cached_actor not in seen:
+                            role = "survivor"
+                            cached_cls = cache_info.get("class") or self._class_name(cached_actor)
+                            _, cached_form = self._class_role_info(cached_cls)
+                            cached_form = self._form_for_array_role(role, cached_form)
+                            cached_pos = self._actor_position(cached_actor)
+                            role_state = self._update_player_state_tracker(
+                                ps, role, cached_form, cached_cls, cached_actor, cached_pos, now
+                            )
+                            pa_item["cached_actor"] = self._debug_hex(cached_actor)
+                            pa_item["cached_actor_info"] = cache_info
+                            pa_item["class"] = cached_cls
+                            pa_item["position"] = self._debug_pos(cached_pos)
+                            pa_item["position_source"] = "cached_live_survivor_actor"
+                            pa_item["role"] = role
+                            pa_item["form"] = cached_form
+                            pa_item.update(role_state)
+                            pa_item["result"] = "candidate"
+                            pa_item["reason"] = "live_survivor_cached_actor"
+                            playerarray_debug.append(pa_item)
+                            stats["pa_cached"] += 1
+                            seen.add(cached_actor)
+                            yield from _emit_actor(
+                                cached_actor, i, "pa_valid", pa_item["display_name"],
+                                source="player_array_live_survivor_cache", player_state=ps,
+                                role_state=role_state, role_override=role, form_override=cached_form
+                            )
+                            yielded += 1
+                            continue
                         pa_item["result"] = "skip"
                         pa_item["reason"] = "no_pawn"
                         playerarray_debug.append(pa_item)
@@ -1422,7 +1515,7 @@ class MecchaESP:
                     pa_item["reverse_player_state"] = self._debug_hex(self._pawn_playerstate(pawn))
                     pa_item["controller"] = self._debug_hex(self._pawn_controller(pawn))
                     pa_item["short_id"] = self._short_pointer_id(ps, pawn)
-                    if collect_debug:
+                    if collect_debug and self._is_character_class(pawn_cls):
                         pa_item["character_flags"] = self._character_debug_fields(pawn)
                     pa_item["game_state_membership"] = self._player_membership_debug(ps, game_membership)
                     role, form = self._class_role_info(pawn_cls)
@@ -1501,7 +1594,8 @@ class MecchaESP:
                             seen.add(linked_actor)
                             yield from _emit_actor(
                                 linked_actor, i, "pa_valid", pa_item["display_name"],
-                                source="player_array_spectate_link", player_state=ps, role_state=role_state
+                                source="player_array_spectate_link", player_state=ps, role_state=role_state,
+                                role_override=linked_role, form_override=linked_form
                             )
                             yielded += 1
                             continue
@@ -1520,7 +1614,8 @@ class MecchaESP:
                     playerarray_debug.append(pa_item)
                     yield from _emit_actor(
                         pawn, i, "pa_valid", pa_item["display_name"],
-                        source="player_array", player_state=ps, role_state=role_state
+                        source="player_array", player_state=ps, role_state=role_state,
+                        role_override=role, form_override=form
                     )
                     yielded += 1
 
@@ -1569,7 +1664,7 @@ class MecchaESP:
                         pos_info = self._actor_position_info(actor)
                         level_item["position"] = self._debug_pos(pos_info["position"])
                         level_item["position_source"] = pos_info["source"]
-                        if collect_debug:
+                        if collect_debug and self._is_character_class(cls_name):
                             level_item["character_flags"] = self._character_debug_fields(actor)
                         if not actor_ps and not controller:
                             stats["level_orphan"] += 1
@@ -1600,7 +1695,8 @@ class MecchaESP:
                         level_debug.append(level_item)
                         yield from _emit_actor(
                             actor, i, "level_valid", level_item["display_name"],
-                            source="level_actor", player_state=actor_ps, role_state=role_state
+                            source="level_actor", player_state=actor_ps, role_state=role_state,
+                            role_override=role, form_override=form
                         )
 
         self._last_iter_stats = stats
