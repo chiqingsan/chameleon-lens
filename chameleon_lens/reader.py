@@ -148,6 +148,39 @@ class MecchaESP:
     PLAYER_TRACKER_TTL_SECONDS = 20.0
     NAME_CACHE_SECONDS = 1.0
     SPECTATE_LINKED_CHARACTER_OFFSET = 0x1A0
+    GAMESTATE_DIAGNOSTIC_OFFSETS = {
+        "current_game_phase": 0x0318,
+        "live_survivors_player_state": 0x0348,
+        "live_survivors_controller": 0x0358,
+        "timer_number": 0x0390,
+        "timer_text_index": 0x0394,
+        "max_timer_time": 0x0398,
+        "game_mode_raw": 0x039C,
+        "hunters_player_state": 0x03A0,
+        "force_provocation_interval": 0x03C0,
+        "map_index": 0x03D8,
+        "main_game_phase": 0x0418,
+    }
+    CHARACTER_DIAGNOSTIC_OFFSETS = {
+        "mesh": 0x0328,
+        "is_hunter_flag": 0x0C3A,
+        "is_live_self": 0x0C3C,
+        "game_state_ptr": 0x0C40,
+        "last_my_player_state_sdk": 0x0C48,
+        "body_visibility": 0x0C50,
+        "hide_block": 0x0C60,
+        "nameplate_visibility": 0x0C61,
+    }
+    SPECTATE_DIAGNOSTIC_OFFSETS = {
+        "spectate_target": 0x0368,
+        "self_controller": 0x0378,
+        "is_free_camera": 0x0388,
+        "my_main_body": 0x03A0,
+        "can_back_body": 0x03A8,
+    }
+    MESH_BLEND_PHYSICS_BYTE_OFFSET = 0x0A71
+    MESH_BLEND_PHYSICS_BIT_MASK = 0x20
+    MESH_BODY_PHYSICS_BLEND_WEIGHT_OFFSET = 0x04AC
     PLAYERSTATE_FALLBACK_OFFSETS = {
         "CustomPlayerName": 0x388,
         "PlayerNamePrivate": 0x340,
@@ -797,7 +830,213 @@ class MecchaESP:
         except Exception:
             return 0
 
-    def _spectate_linked_character_info(self, spectate_pawn, player_state):
+    def _read_u8_at(self, addr):
+        try:
+            return struct.unpack("<B", self.pm.read_bytes(addr, 1))[0]
+        except Exception:
+            return None
+
+    def _read_i32_at(self, addr):
+        try:
+            return struct.unpack("<i", self.pm.read_bytes(addr, 4))[0]
+        except Exception:
+            return None
+
+    def _debug_ptr_array_at(self, base, offset, limit=16):
+        out = {
+            "offset": offset,
+            "data": "0x0",
+            "count": 0,
+            "max": 0,
+            "max_legacy_10": 0,
+            "items": [],
+        }
+        if not base:
+            return out
+        array_addr = base + offset
+        data = rp(self.pm, array_addr)
+        count = ru32(self.pm, array_addr + 0x08)
+        # 标准 TArray 的 Max 在 +0x0C；旧 read_array helper 读取 +0x10，这里两者都记录便于对照。
+        cap = ru32(self.pm, array_addr + 0x0C)
+        legacy_cap = ru32(self.pm, array_addr + 0x10)
+        out["data"] = self._debug_hex(data)
+        out["count"] = int(count or 0)
+        out["max"] = int(cap or 0)
+        out["max_legacy_10"] = int(legacy_cap or 0)
+        if not data or count <= 0 or count > 256:
+            return out
+        for i in range(min(count, limit)):
+            ptr = rp(self.pm, data + i * 8)
+            out["items"].append({
+                "idx": i,
+                "ptr": self._debug_hex(ptr),
+                "class": self._safe_class_name(ptr),
+                "name": self._object_name(ptr),
+            })
+        return out
+
+    def _ptr_set_at(self, base, offset, limit=64):
+        if not base:
+            return set(), 0
+        data = rp(self.pm, base + offset)
+        count = ru32(self.pm, base + offset + 0x08)
+        if not data or count <= 0 or count > limit:
+            return set(), int(count or 0)
+        return {rp(self.pm, data + i * 8) for i in range(count)}, int(count)
+
+    def _game_state_membership(self, gamestate):
+        """读取 GameState 阵营数组；只在数组看起来稳定时参与过滤。"""
+        if not gamestate:
+            return {
+                "valid": False,
+                "mode_raw": None,
+                "main_phase": None,
+                "current_phase": None,
+                "live_survivors": set(),
+                "hunters": set(),
+                "live_count": 0,
+                "hunter_count": 0,
+            }
+        off = self.GAMESTATE_DIAGNOSTIC_OFFSETS
+        live, live_count = self._ptr_set_at(gamestate, off["live_survivors_player_state"])
+        hunters, hunter_count = self._ptr_set_at(gamestate, off["hunters_player_state"])
+        mode_raw = self._read_u8_at(gamestate + off["game_mode_raw"])
+        main_phase = self._read_u8_at(gamestate + off["main_game_phase"])
+        current_phase = self._read_u8_at(gamestate + off["current_game_phase"])
+        # phase 0 且数组为空时通常是大厅/结算切换，不能用空数组隐藏目标。
+        valid = (
+            mode_raw in (0, 1)
+            and main_phase in (1, 2, 3)
+            and (live_count > 0 or hunter_count > 0)
+            and live_count <= 64
+            and hunter_count <= 64
+        )
+        return {
+            "valid": bool(valid),
+            "mode_raw": mode_raw,
+            "main_phase": main_phase,
+            "current_phase": current_phase,
+            "live_survivors": live,
+            "hunters": hunters,
+            "live_count": live_count,
+            "hunter_count": hunter_count,
+        }
+
+    def _player_membership_debug(self, player_state, membership):
+        state = "unknown"
+        if membership.get("valid"):
+            if player_state in membership.get("live_survivors", set()):
+                state = "live_survivor"
+            elif player_state in membership.get("hunters", set()):
+                state = "hunter"
+            else:
+                state = "neither"
+        return {
+            "valid": bool(membership.get("valid")),
+            "state": state,
+            "mode_raw": membership.get("mode_raw"),
+            "main_phase": membership.get("main_phase"),
+            "current_phase": membership.get("current_phase"),
+            "live_count": membership.get("live_count", 0),
+            "hunter_count": membership.get("hunter_count", 0),
+        }
+
+    def _array_role_for_player(self, player_state, membership):
+        if not player_state or not membership.get("valid"):
+            return ""
+        if player_state in membership.get("live_survivors", set()):
+            return "survivor"
+        if player_state in membership.get("hunters", set()):
+            return "hunter"
+        return ""
+
+    def _form_for_array_role(self, array_role, current_form):
+        if array_role == "hunter":
+            return FORM_NAME_MAP.get("hunter", current_form)
+        if array_role == "survivor" and current_form == "unknown":
+            return FORM_NAME_MAP.get("survivor", current_form)
+        return current_form
+
+
+    def _game_state_debug_fields(self, gamestate):
+        """记录 SDK 里已知的 GameState 原始字段，只用于后续模式指纹分析。"""
+        if not gamestate:
+            return {}
+        off = self.GAMESTATE_DIAGNOSTIC_OFFSETS
+        return {
+            "current_game_phase": self._read_u8_at(gamestate + off["current_game_phase"]),
+            "main_game_phase": self._read_u8_at(gamestate + off["main_game_phase"]),
+            "game_mode_raw": self._read_u8_at(gamestate + off["game_mode_raw"]),
+            "timer_number": self._read_i32_at(gamestate + off["timer_number"]),
+            "timer_text_index": self._read_i32_at(gamestate + off["timer_text_index"]),
+            "max_timer_time": self._read_i32_at(gamestate + off["max_timer_time"]),
+            "force_provocation_interval": self._read_i32_at(gamestate + off["force_provocation_interval"]),
+            "map_index": self._read_i32_at(gamestate + off["map_index"]),
+            "live_survivors_player_state": self._debug_ptr_array_at(
+                gamestate, off["live_survivors_player_state"]
+            ),
+            "live_survivors_controller": self._debug_ptr_array_at(
+                gamestate, off["live_survivors_controller"]
+            ),
+            "hunters_player_state": self._debug_ptr_array_at(
+                gamestate, off["hunters_player_state"]
+            ),
+        }
+
+    def _character_debug_fields(self, actor):
+        """记录 Character 蓝图字段和物理混合状态；这些字段暂不参与过滤。"""
+        if not actor:
+            return {}
+        off = self.CHARACTER_DIAGNOSTIC_OFFSETS
+        mesh = rp(self.pm, actor + off["mesh"])
+        blend_raw = self._read_u8_at(mesh + self.MESH_BLEND_PHYSICS_BYTE_OFFSET) if mesh else None
+        return {
+            "is_hunter_flag": self._read_u8_at(actor + off["is_hunter_flag"]),
+            "is_live_self": self._read_u8_at(actor + off["is_live_self"]),
+            "body_visibility": self._read_u8_at(actor + off["body_visibility"]),
+            "hide_block": self._read_u8_at(actor + off["hide_block"]),
+            "nameplate_visibility": self._read_u8_at(actor + off["nameplate_visibility"]),
+            "game_state_ptr": self._debug_hex(rp(self.pm, actor + off["game_state_ptr"])),
+            "last_my_player_state_sdk": self._debug_hex(rp(self.pm, actor + off["last_my_player_state_sdk"])),
+            "mesh": self._debug_hex(mesh),
+            "mesh_blend_physics_raw": blend_raw,
+            "mesh_blend_physics_bit": bool(blend_raw & self.MESH_BLEND_PHYSICS_BIT_MASK)
+            if blend_raw is not None else None,
+            "body_physics_blend_weight": round(
+                float(rfloat(self.pm, mesh + self.MESH_BODY_PHYSICS_BLEND_WEIGHT_OFFSET)), 4
+            ) if mesh else None,
+        }
+
+    def _debug_actor_brief(self, actor):
+        if not actor:
+            return {"ptr": "0x0"}
+        pos_info = self._actor_position_info(actor)
+        return {
+            "ptr": self._debug_hex(actor),
+            "class": self._safe_class_name(actor),
+            "name": self._object_name(actor),
+            "position": self._debug_pos(pos_info.get("position")),
+            "position_source": pos_info.get("source", ""),
+        }
+
+    def _spectate_debug_fields(self, spectate_pawn):
+        """记录 BP_SpectatePawn_cLeon_C 命名字段，用来和旧 0x1A0 链接做对比。"""
+        if not spectate_pawn:
+            return {}
+        off = self.SPECTATE_DIAGNOSTIC_OFFSETS
+        spectate_target = rp(self.pm, spectate_pawn + off["spectate_target"])
+        self_controller = rp(self.pm, spectate_pawn + off["self_controller"])
+        my_main_body = rp(self.pm, spectate_pawn + off["my_main_body"])
+        return {
+            "spectate_target": self._debug_actor_brief(spectate_target),
+            "self_controller": self._debug_hex(self_controller),
+            "self_controller_class": self._safe_class_name(self_controller),
+            "is_free_camera": self._read_u8_at(spectate_pawn + off["is_free_camera"]),
+            "my_main_body": self._debug_actor_brief(my_main_body),
+            "can_back_body": self._read_u8_at(spectate_pawn + off["can_back_body"]),
+        }
+
+    def _spectate_linked_character_info(self, spectate_pawn, player_state, collect_debug=False):
         """SpectatePawn 可能只是观战壳；若它指向真实角色，就用真实角色绘制。"""
         info = {
             "actor": 0,
@@ -805,6 +1044,8 @@ class MecchaESP:
             "spectate_class": self._safe_class_name(spectate_pawn),
             "spectate_position": self._debug_pos(self._actor_position(spectate_pawn)),
         }
+        if collect_debug:
+            info["spectate_fields"] = self._spectate_debug_fields(spectate_pawn)
         if not spectate_pawn:
             return info
         try:
@@ -825,6 +1066,8 @@ class MecchaESP:
         role, form = self._class_role_info(cls_name)
         info["role"] = role
         info["form"] = form
+        if collect_debug:
+            info["character_flags"] = self._character_debug_fields(linked)
         if not cls_name or "Character" not in cls_name or "Spectate" in cls_name:
             info["reason"] = "not_character"
             return info
@@ -960,6 +1203,7 @@ class MecchaESP:
         context_event = self._update_world_signature(
             world, world_name, gamestate, game_state_name, persistent_level_name
         )
+        game_membership = self._game_state_membership(gamestate)
 
         stats = {"pa_total": 0, "pa_valid": 0, "pa_dead": 0, "pa_orphan": 0, "pa_suspect": 0,
                  "pa_linked": 0,
@@ -993,6 +1237,16 @@ class MecchaESP:
             "local_pawn": self._debug_hex(local_pawn),
             "local_pawn_class": self._safe_class_name(local_pawn),
         }
+        if collect_debug:
+            self._last_iter_context["game_state_fields"] = self._game_state_debug_fields(gamestate)
+            self._last_iter_context["game_state_membership"] = {
+                "valid": bool(game_membership.get("valid")),
+                "mode_raw": game_membership.get("mode_raw"),
+                "main_phase": game_membership.get("main_phase"),
+                "current_phase": game_membership.get("current_phase"),
+                "live_count": game_membership.get("live_count", 0),
+                "hunter_count": game_membership.get("hunter_count", 0),
+            }
         self._last_playerarray_debug = playerarray_debug
         self._last_level_debug = level_debug
         self._last_emit_debug = emit_debug
@@ -1043,6 +1297,8 @@ class MecchaESP:
                 "position_jump": jumped,
                 "position_jump_distance": round(float(jump_distance), 3),
             }
+            if collect_debug:
+                item["character_flags"] = self._character_debug_fields(actor)
             if pos is None:
                 item["result"] = "skip"
                 item["reason"] = "no_position"
@@ -1166,7 +1422,14 @@ class MecchaESP:
                     pa_item["reverse_player_state"] = self._debug_hex(self._pawn_playerstate(pawn))
                     pa_item["controller"] = self._debug_hex(self._pawn_controller(pawn))
                     pa_item["short_id"] = self._short_pointer_id(ps, pawn)
+                    if collect_debug:
+                        pa_item["character_flags"] = self._character_debug_fields(pawn)
+                    pa_item["game_state_membership"] = self._player_membership_debug(ps, game_membership)
                     role, form = self._class_role_info(pawn_cls)
+                    array_role = self._array_role_for_player(ps, game_membership)
+                    if array_role:
+                        role = array_role
+                        form = self._form_for_array_role(array_role, form)
                     pa_item["role"] = role
                     pa_item["form"] = form
                     if pos is None:
@@ -1181,12 +1444,36 @@ class MecchaESP:
                         stats["pa_suspect"] += 1
                     seen.add(pawn)
                     if _is_dead_or_spectator_class(pawn_cls):
-                        linked_info = self._spectate_linked_character_info(pawn, ps)
+                        linked_info = self._spectate_linked_character_info(pawn, ps, collect_debug=collect_debug)
                         pa_item["spectate_link"] = linked_info
                         linked_actor = linked_info.get("actor", 0)
                         if linked_info.get("reason") == "linked_character" and linked_actor and linked_actor not in seen:
                             linked_cls = linked_info.get("class") or self._class_name(linked_actor)
                             linked_role, linked_form = self._class_role_info(linked_cls)
+                            linked_array_role = self._array_role_for_player(ps, game_membership)
+                            if linked_array_role == "hunter" and linked_role == "survivor":
+                                stats["pa_suppressed"] += 1
+                                linked_info["reason"] = "suppressed_not_live_survivor"
+                                linked_info["suppressed_by"] = "game_state_hunter"
+                                pa_item["result"] = "skip"
+                                pa_item["reason"] = "suppressed_not_live_survivor"
+                                playerarray_debug.append(pa_item)
+                                continue
+                            if (
+                                linked_role == "survivor"
+                                and game_membership.get("valid")
+                                and linked_array_role != "survivor"
+                            ):
+                                stats["pa_suppressed"] += 1
+                                linked_info["reason"] = "suppressed_not_live_survivor"
+                                linked_info["suppressed_by"] = "game_state_neither"
+                                pa_item["result"] = "skip"
+                                pa_item["reason"] = "suppressed_not_live_survivor"
+                                playerarray_debug.append(pa_item)
+                                continue
+                            if linked_array_role:
+                                linked_role = linked_array_role
+                                linked_form = self._form_for_array_role(linked_array_role, linked_form)
                             if role_state.get("converted_to_hunter") and linked_role == "survivor":
                                 stats["pa_suppressed"] += 1
                                 linked_info["reason"] = "suppressed_after_hunter_conversion"
@@ -1282,6 +1569,8 @@ class MecchaESP:
                         pos_info = self._actor_position_info(actor)
                         level_item["position"] = self._debug_pos(pos_info["position"])
                         level_item["position_source"] = pos_info["source"]
+                        if collect_debug:
+                            level_item["character_flags"] = self._character_debug_fields(actor)
                         if not actor_ps and not controller:
                             stats["level_orphan"] += 1
                             level_item["result"] = "skip"

@@ -84,6 +84,16 @@ def summarize(path):
     spectate_link_position_sources = Counter()
     spectate_link_dead_values = Counter()
     spectate_link_bindings = Counter()
+    game_mode_raw_values = Counter()
+    game_phase_values = Counter()
+    game_map_values = Counter()
+    game_timer_values = Counter()
+    game_state_array_counts = Counter()
+    player_membership_values = Counter()
+    spectate_named_targets = Counter()
+    spectate_named_target_classes = Counter()
+    character_flag_values = Counter()
+    character_physics_values = Counter()
     context_events = Counter()
     converted_hunter_items = Counter()
     role_timeline = defaultdict(list)
@@ -138,6 +148,24 @@ def summarize(path):
         context_event = context.get("context_event") or {}
         if context_event:
             context_events[context_event.get("type") or "unknown"] += 1
+        game_fields = context.get("game_state_fields") or {}
+        if game_fields:
+            game_mode_raw_values[str(game_fields.get("game_mode_raw"))] += 1
+            game_phase_values[(
+                game_fields.get("main_game_phase"),
+                game_fields.get("current_game_phase"),
+            )] += 1
+            game_map_values[game_fields.get("map_index")] += 1
+            game_timer_values[(
+                game_fields.get("timer_number"),
+                game_fields.get("timer_text_index"),
+                game_fields.get("max_timer_time"),
+            )] += 1
+            game_state_array_counts[(
+                (game_fields.get("live_survivors_player_state") or {}).get("count"),
+                (game_fields.get("hunters_player_state") or {}).get("count"),
+                (game_fields.get("live_survivors_controller") or {}).get("count"),
+            )] += 1
 
         projection_reasons.update(row.get("projection_reasons") or {})
         row_edge_reasons = row.get("edge_reasons") or {}
@@ -171,6 +199,50 @@ def summarize(path):
                     "actor_ps_match" if link.get("actor_player_state") == item.get("player_state") else "actor_ps_mismatch",
                     "last_ps_match" if link.get("last_player_state") == item.get("player_state") else "last_ps_mismatch",
                     "has_controller" if link.get("controller") and link.get("controller") != "0x0" else "no_controller",
+                )] += 1
+                spectate_fields = link.get("spectate_fields") or {}
+                target = spectate_fields.get("spectate_target") or {}
+                main_body = spectate_fields.get("my_main_body") or {}
+                spectate_named_targets[(
+                    "has_target" if target.get("ptr") and target.get("ptr") != "0x0" else "no_target",
+                    "has_main_body" if main_body.get("ptr") and main_body.get("ptr") != "0x0" else "no_main_body",
+                    f"free={spectate_fields.get('is_free_camera')}",
+                    f"back={spectate_fields.get('can_back_body')}",
+                )] += 1
+                spectate_named_target_classes[(
+                    target.get("class") or "",
+                    main_body.get("class") or "",
+                )] += 1
+            flags = item.get("character_flags") or {}
+            if flags:
+                character_flag_values[(
+                    f"IsHunter={flags.get('is_hunter_flag')}",
+                    f"IsLiveSelf={flags.get('is_live_self')}",
+                    f"BodyVisibility={flags.get('body_visibility')}",
+                    f"HideBlock={flags.get('hide_block')}",
+                    f"NamePlate={flags.get('nameplate_visibility')}",
+                )] += 1
+                blend_weight = flags.get("body_physics_blend_weight")
+                if isinstance(blend_weight, (int, float)):
+                    if blend_weight <= 0:
+                        blend_bucket = "blend=0"
+                    elif blend_weight < 0.5:
+                        blend_bucket = "blend<0.5"
+                    else:
+                        blend_bucket = "blend>=0.5"
+                else:
+                    blend_bucket = "blend=None"
+                character_physics_values[(
+                    f"blend_bit={flags.get('mesh_blend_physics_bit')}",
+                    blend_bucket,
+                )] += 1
+            membership = item.get("game_state_membership") or {}
+            if membership:
+                player_membership_values[(
+                    f"valid={membership.get('valid')}",
+                    membership.get("state") or "unknown",
+                    item.get("role") or "unknown",
+                    item.get("reason") or item.get("result") or "",
                 )] += 1
             role = item.get("role") or "unknown"
             stable_role = item.get("stable_role") or role
@@ -215,6 +287,29 @@ def summarize(path):
             position_sources[item.get("position_source") or "unknown"] += 1
             emitted_sources[item.get("source") or "unknown"] += 1
             emitted_results[item.get("result") or "unknown"] += 1
+            flags = item.get("character_flags") or {}
+            if flags:
+                character_flag_values[(
+                    f"IsHunter={flags.get('is_hunter_flag')}",
+                    f"IsLiveSelf={flags.get('is_live_self')}",
+                    f"BodyVisibility={flags.get('body_visibility')}",
+                    f"HideBlock={flags.get('hide_block')}",
+                    f"NamePlate={flags.get('nameplate_visibility')}",
+                )] += 1
+                blend_weight = flags.get("body_physics_blend_weight")
+                if isinstance(blend_weight, (int, float)):
+                    if blend_weight <= 0:
+                        blend_bucket = "blend=0"
+                    elif blend_weight < 0.5:
+                        blend_bucket = "blend<0.5"
+                    else:
+                        blend_bucket = "blend>=0.5"
+                else:
+                    blend_bucket = "blend=None"
+                character_physics_values[(
+                    f"blend_bit={flags.get('mesh_blend_physics_bit')}",
+                    blend_bucket,
+                )] += 1
 
     print(f"pa_dead 出现帧：{pa_dead_frames}")
     print(f"pa_linked 出现帧：{pa_linked_frames}")
@@ -239,11 +334,21 @@ def summarize(path):
     print_counter("已接受名称", accepted_names)
     print_counter("对局上下文 Top: GameStateClass, GameStateName, LevelName, LocalPawnClass", contexts)
     print_counter("上下文变化事件", context_events)
+    print_counter("GameMode 原始值", game_mode_raw_values)
+    print_counter("GameState 阶段: MainGamePhase, CurrentGamePhase", game_phase_values)
+    print_counter("地图索引 MapIndex", game_map_values)
+    print_counter("计时器: TimerNumber, TimerTextIndex, MaxTimerTime", game_timer_values)
+    print_counter("GameState 数组数量: LiveSurvivorsPS, HuntersPS, LiveSurvivorsController", game_state_array_counts)
+    print_counter("PlayerArray 的 GameState 阵营归属: Valid, State, Role, Reason", player_membership_values)
     print_counter("Spectate 链接原因", spectate_link_reasons)
     print_counter("Spectate 链接类: Class, Role, Form", spectate_link_classes)
     print_counter("Spectate 链接坐标来源", spectate_link_position_sources)
     print_counter("Spectate 链接 Dead 值", spectate_link_dead_values)
     print_counter("Spectate 链接绑定: ActorPS, LastPS, Controller", spectate_link_bindings)
+    print_counter("Spectate 命名字段: Target, MainBody, FreeCamera, CanBackBody", spectate_named_targets)
+    print_counter("Spectate 命名字段类: SpectateTargetClass, MyMainBodyClass", spectate_named_target_classes)
+    print_counter("Character SDK 标志", character_flag_values)
+    print_counter("Character 物理混合", character_physics_values)
     print_counter("角色分类", roles)
     print_counter("稳定角色分类", stable_roles)
     print_counter("过滤角色分类", filter_roles)
@@ -296,6 +401,14 @@ def summarize(path):
         print("  位置大跳变已出现：通常意味着回合重置、地图切换或目标实例重建，相关缓存会被清理。")
     if context_events:
         print("  上下文变化已记录：world/GameState/Level 变化时会清理跨局身份和位置缓存。")
+    if game_mode_raw_values:
+        print("  GameMode 目前只输出原始值：需要结合你标注的普通/感染/双重日志，把 0/1/2 映射到真实玩法。")
+    if player_membership_values:
+        print("  GameState 阵营归属已记录：live_survivor 用于保留存活躲藏方，neither 可用于隐藏非感染旧 Spectate 链接。")
+    if spectate_named_targets:
+        print("  Spectate 命名字段已记录：可对比 SpectateTarget/MyMainBody 与旧 0x1A0 链接，判断哪条链更可靠。")
+    if character_physics_values:
+        print("  Character 物理混合已记录：若死亡模型会进入物理模拟，blend_bit 或 blend_weight 可能成为后续隐藏依据。")
 
 
 def main():
