@@ -19,6 +19,12 @@ class ESPRuntime:
     def connected(self):
         return self.esp is not None
 
+    def disconnect(self, status, error=""):
+        """主动丢弃当前 reader，让入口定时器可以重新连接游戏进程。"""
+        self.esp = None
+        self.status = status
+        self.last_error = error
+
     def connect_once(self):
         """尝试连接目标进程；失败只更新状态，避免启动阶段直接崩溃。"""
         try:

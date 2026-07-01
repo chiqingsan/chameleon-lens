@@ -42,7 +42,7 @@
 - 用户可见文本使用中文；UE 类名、偏移键、进程名、窗口标题等技术标识保持原文。
 - 关键运行时状态不通过异常弹窗暴露给用户，菜单和覆盖层只展示简短状态。
 - 目标进程未出现时，状态只显示在菜单标题栏右上角；覆盖层保持透明，不绘制等待提示卡。
-- 进程连接失败属于正常状态：`ESPRuntime.connect_once()` 捕获异常、更新状态，并由入口定时器重试。
+- 进程连接失败属于正常状态：`ESPRuntime.connect_once()` 捕获异常、更新状态，并由入口定时器重试。若工具先于游戏启动，reader 可能在 UE World / 相机未就绪时短暂连接成功；覆盖层连续读不到相机时会主动丢弃 reader，让入口定时器重新连接。
 - 应用入口通过 Windows 命名互斥体 `Global\ChameleonLensMecchaEsp` 做单例保护，重复启动会直接退出。
 - 运行依赖统一通过项目内 `.venv` 管理，用户入口优先使用 `run.bat`。`run.bat` 只检查 `.venv\.requirements.stamp` 是否存在，存在时直接启动主程序，避免每次启动都拉起 PowerShell 算哈希或进入 pip 检查；修改 `requirements.txt` 后用 `run.bat --check-only` 刷新依赖 stamp。
 - 配置持久化使用 JSON。源码运行时写入项目根目录 `config.json`，便于开发排查；Nuitka 打包版写入 `%LOCALAPPDATA%\Chameleon Lens\config.json`，日志写入 `%LOCALAPPDATA%\Chameleon Lens\logs`，避免 onefile 临时目录或程序目录权限导致数据丢失。保存采用临时文件替换，避免写入中断导致配置损坏。
@@ -58,6 +58,7 @@
 - `enabled` 是覆盖层总开关；`esp_enabled` 只控制屏幕 ESP 绘制，关闭后目标点、标签、射线和边缘提示都不画，但雷达仍由 `radar_enabled` 独立控制。
 - 全局快捷键由 `hotkey_menu_toggle`、`hotkey_overlay_toggle`、`hotkey_esp_toggle`、`hotkey_radar_toggle` 四个配置字段控制；菜单显隐默认 `F1`，其余默认为空。快捷键录入期间入口轮询会暂停，避免按下当前热键时误触发菜单隐藏或开关切换。
 - 覆盖层分离三个刷新节奏：绘制约 90 FPS，目标快照采样约 90 FPS，窗口位置和尺寸约每 250ms 更新一次。高刷新使用 `Qt.PreciseTimer`，不要盲目继续拉高 timer；先看调试日志里的 `performance.sample_ms` 和 `performance.paint_ms`，若采样 p95 接近 11ms，应优先降低采样频率或减少读取开销。
+- 覆盖层每次跟随游戏窗口时都要重新确认 `HWND_TOPMOST`，避免先启动工具、后启动游戏时，后出现的游戏窗口把透明层盖住导致视觉上像 ESP 没绘制。
 - `show_hunter_esp` 控制猎人是否参与显示；关闭后稳定判定为猎人的屏幕 ESP 与雷达点都不绘制，但底层 PlayerArray 调试日志仍会记录猎人候选。猎人过滤使用 `filter_role`，不会直接吃瞬时 `role`；颜色显示优先使用当前明确的 `role`，避免身份防抖期间猎人/躲藏者短暂沿用旧颜色。
 - `show_names` 和 `show_distance` 是两个独立开关，不再用一个“名称与距离”控件同时表达两件事；`show_edge_indicators` 独立控制屏幕外/背后目标边缘提示。
 - 名称标签优先读取 `APlayerState::CustomPlayerName`，按 FText/FString 都尝试；失败后再读 `APlayerState::PlayerNamePrivate` 的 FString，最后才回退为“玩家 短 ID”、`PlayerId` 或“目标 N”。短 ID 不再用 `#xxxxxx`，避免和颜色 Hex 格式混淆。`CustomPlayerName`、`PlayerNamePrivate`、`PlayerId` 都采用动态属性解析优先，失败时使用历史日志确认过的 `0x388`、`0x340`、`0x2AC` 兜底。PlayerState 显示名会短时缓存，只有开启数据记录时才写入完整 `name_candidates`。

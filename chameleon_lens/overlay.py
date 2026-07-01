@@ -20,6 +20,7 @@ class Overlay(QWidget):
     PAINT_INTERVAL_MS = 11
     SNAPSHOT_INTERVAL_MS = 11
     GEOMETRY_INTERVAL_MS = 250
+    CAMERA_WAIT_RECONNECT_SECONDS = 3.0
 
     def __init__(self, runtime: ESPRuntime, config: Config, on_status_changed=None):
         super().__init__()
@@ -43,6 +44,7 @@ class Overlay(QWidget):
         self._last_sample_ms = 0.0
         self._last_paint_ms = 0.0
         self._last_debug_config = None
+        self._camera_missing_since = None
 
         self.paint_timer = QTimer(self)
         self.paint_timer.setTimerType(Qt.PreciseTimer)
@@ -82,9 +84,27 @@ class Overlay(QWidget):
         except Exception:
             self.setGeometry(0, 0, 1920, 1080)
 
+    def _ensure_topmost(self):
+        """游戏后启动时可能抢到顶层窗口，这里周期性把透明层放回最上方。"""
+        try:
+            import win32con
+            import win32gui
+            win32gui.SetWindowPos(
+                int(self.winId()),
+                win32con.HWND_TOPMOST,
+                self.x(),
+                self.y(),
+                self.width(),
+                self.height(),
+                win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW,
+            )
+        except Exception:
+            pass
+
     def update_geometry(self):
         self.game_hwnd = self._find_game_window()
         self._resize_to_game()
+        self._ensure_topmost()
 
     def refresh_snapshot(self):
         """按固定采样频率读取目标快照，绘制阶段只消费缓存，避免 UI 线程每帧重复读内存。"""
@@ -107,10 +127,12 @@ class Overlay(QWidget):
         try:
             cam = esp.get_camera()
             if not cam:
+                self._handle_missing_camera()
                 self._snapshot_camera = None
                 self._snapshot_players = []
                 self._snapshot_collect_debug = False
                 return
+            self._camera_missing_since = None
             collect_debug = self.config.record_debug_data and self.debug_recorder.is_due()
             players = list(esp.iter_players(
                 include_local=self.config.show_local,
@@ -131,6 +153,21 @@ class Overlay(QWidget):
         self._snapshot_collect_debug = collect_debug
         self._last_sample_ms = (time.perf_counter() - started) * 1000.0
         self.update()
+
+    def _handle_missing_camera(self):
+        now = time.monotonic()
+        if self._camera_missing_since is None:
+            self._camera_missing_since = now
+            return
+        if now - self._camera_missing_since < self.CAMERA_WAIT_RECONNECT_SECONDS:
+            return
+        self._camera_missing_since = None
+        self.runtime.disconnect(
+            "已找到进程，等待游戏画面初始化...",
+            "连续读取不到相机，已重建连接等待游戏窗口和 UE World 就绪",
+        )
+        if self.on_status_changed:
+            self.on_status_changed()
 
     def paintEvent(self, event):
         started = time.perf_counter()
@@ -640,8 +677,7 @@ class Overlay(QWidget):
         return role == "hunter" and not self.config.show_hunter_esp
 
     def _mark_disconnected(self, exc):
-        self.runtime.esp = None
-        self.runtime.status = "连接已断开，等待游戏进程重新出现..."
-        self.runtime.last_error = str(exc)
+        self._camera_missing_since = None
+        self.runtime.disconnect("连接已断开，等待游戏进程重新出现...", str(exc))
         if self.on_status_changed:
             self.on_status_changed()

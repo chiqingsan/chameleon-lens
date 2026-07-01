@@ -71,6 +71,8 @@ build_nuitka.bat
 - `SpectatePawn` 可能是观战壳，也可能仍链接一个真实躲藏者 Character；当前会使用 `SpectatePawn + 0x1A0` 做宽松兜底，只要真实 Character 的 `LastMyPlayerState` 或 `APawn::PlayerState` 匹配当前 PlayerState、坐标有效，并且未被 GameState 阵营数组判为旧 survivor 链接，就使用真实 Character 绘制。`Dead` 字段只写入日志，不再作为临时过滤条件。感染模式中仍在 `LiveSurvivors` 的 Spectate 链接会继续绘制；非感染/基础模式里不在 `LiveSurvivors` 的旧 survivor 链接会跳过。
 - `GameState` 阵营数组有效时，`reader` 会记录 `player_array_debug[].game_state_membership`，并用它修正 `role`：`live_survivor` 按躲藏方处理，`hunter` 按猎人处理。`SpectatePawn` 链到 survivor 旧模型但 PlayerState 不在 `LiveSurvivors` 时会跳过并记录 `suppressed_not_live_survivor`；该规则只在 `game_mode_raw` 为已观察到的 `0/1`、`MainGamePhase` 为 `1/2/3` 且阵营数组非空时生效，避免大厅或结算阶段空数组导致漏绘制。
 - 如果 `GameState` 仍确认 PlayerState 在 `LiveSurvivors`，但 `PlayerArray.PawnPrivate` 暂时为空，`reader` 会尝试用最近 8 秒内见过的非观战 survivor Character 回补，记录为 `pa_cached` / `live_survivor_cached_actor`。该回补必须依赖当前 GameState 存活名单；PlayerState 被移出 `LiveSurvivors` 后不会靠缓存继续绘制。
+- 如果工具先于游戏启动，进程可能已存在但 UE World、LocalPlayer 或相机还没就绪；覆盖层连续读不到相机会主动断开当前 reader，让入口定时器重新构造连接。排查启动顺序问题时同时看菜单最近错误、`runtime.last_error` 和是否存在 `camera` 字段。
+- 如果读数正常但屏幕上完全看不到覆盖层，优先确认游戏是否后来抢到顶层窗口。覆盖层会在窗口跟随定时器中重新设置 `HWND_TOPMOST`；独占全屏仍建议切到窗口化或无边框窗口。
 - 阵营数组修正后的 `role/form` 会进入最终 `TargetSnapshot`，因此颜色和 `show_hunter_esp` 过滤应优先反映 `GameState` 阵营。`tools/analyze_runtime_debug.py` 会输出“对局时间线”，用于快速查看模式、阶段、LiveSurvivors/Hunters 数量和 suppressed 变化点。
 - `character_flags` 记录 `IsHunter`、`IsLiveSelf`、`BodyVisibility`、`HideBlock`、`CurrentNamePlateVisibility`、`bBlendPhysics` bit 和 `PhysicsBlendWeight`。这些字段当前是诊断信息，不参与绘制过滤；后续如果要隐藏阵亡目标，需要先确认它们在普通、感染和双重模式里的差异足够稳定。
 - 不要用“目标静止不动”作为死亡判定依据；本游戏是躲猫猫类玩法，静止是正常行为。
